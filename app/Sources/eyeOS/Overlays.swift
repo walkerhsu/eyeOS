@@ -56,13 +56,13 @@ final class Overlays {
             DispatchQueue.main.asyncAfter(deadline: .now() + Double(count) * 1.2 + 0.3) { [weak self] in self?.dismiss(rid) }
         case "look_away_card":
             present(rid, AnyView(LookAwayCard(message: p.str("message") ?? "Look at something far away.",
-                                              seconds: p.int("duration_s") ?? 20) { [weak self] by in
+                                              seconds: p.int("duration_s") ?? 20, confirm: false, leadIn: 5) { [weak self] by in
                 self?.respond(rid, ["dismissed_by": by])
             }), at: .banner)
         case "posture_card":
             present(rid, AnyView(LookAwayCard(message: p.str("message") ?? "Sit back and roll your shoulders.",
                                               seconds: p.int("duration_s") ?? 12, title: "Your posture is drifting",
-                                              icon: "figure.stand") { [weak self] by in
+                                              icon: "figure.stand", confirm: ((p["confirm"] as? Bool) ?? true), startLabel: "Start reset") { [weak self] by in
                 self?.respond(rid, ["dismissed_by": by])
             }), at: .banner)
         case "exercise":
@@ -478,26 +478,56 @@ struct LookAwayCard: View {
     let seconds: Int
     var title = "Time for a 20-second break"
     var icon = "window.vertical.open"
+    var confirm = true
+    var startLabel = "Start break"
+    var leadIn = 0  // seconds of "get ready" countdown (red) before the real one starts by itself
     let done: (String) -> Void
     @StateVar private var left: Double = 0
+    @StateVar private var ready: Double = 0
+    @StateVar private var started = false
     var body: some View {
         Card(title: title, icon: icon) {
             ExpandableText(text: message).foregroundStyle(.secondary)
+            if confirm && !started {
+                HStack {
+                    Spacer()
+                    Button("Not now") { done("declined") }.controlSize(.small)
+                    Button(startLabel) { started = true }.controlSize(.small).buttonStyle(.borderedProminent)
+                }
+            } else {
             HStack {
                 ZStack {
+                    let getting = ready > 0
                     Circle().stroke(.secondary.opacity(0.3), lineWidth: 3)
-                    Circle().trim(from: 0, to: left / Double(seconds)).stroke(.teal, style: .init(lineWidth: 3, lineCap: .round))
+                    Circle().trim(from: 0, to: getting ? ready / Double(leadIn) : left / Double(seconds))
+                        .stroke(getting ? .red : .teal, style: .init(lineWidth: 3, lineCap: .round))
                         .rotationEffect(.degrees(-90))
-                    Text("\(Int(left.rounded(.up)))").font(.caption2.monospacedDigit())
+                    Text("\(Int((getting ? ready : left).rounded(.up)))").font(.caption2.monospacedDigit())
                 }.frame(width: 26, height: 26)
+                if ready > 0 { Text("Get ready…").foregroundStyle(.red) }
                 Spacer()
-                Button("Done") { done("user") }.controlSize(.small)
+                if ready > 0 { Button("Cancel") { done("declined") }.controlSize(.small) }
+                else { Button("Done") { done("user") }.controlSize(.small) }
+            }
             }
         }
         .task {
+            // a cancelled sleep returns at once, so every wait bails out instead of racing to "timeout"
+            while confirm && !started {
+                try? await Task.sleep(for: .milliseconds(100))
+                if Task.isCancelled { return }
+            }
+            started = true
+            ready = Double(leadIn)
+            while ready > 0 {
+                try? await Task.sleep(for: .milliseconds(100))
+                if Task.isCancelled { return }
+                ready = max(0, ready - 0.1)
+            }
             left = Double(seconds)
             while left > 0 {
                 try? await Task.sleep(for: .milliseconds(100))
+                if Task.isCancelled { return }
                 left = max(0, left - 0.1)
             }
             done("timeout")

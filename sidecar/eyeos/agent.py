@@ -484,12 +484,12 @@ class Agent:
             res = await app.ui_request("blink_pulse", {"count": a["count"], "intensity": a["intensity"]}, 10)
             return res is not None, "pulse shown" if res is not None else "UI did not respond"
         if name == "suggest_look_out_window":
-            asyncio.create_task(app.ui_request("look_away_card", {"message": a["message"], "duration_s": 20}, 60))
+            asyncio.create_task(app.ui_request("look_away_card", {"message": a["message"], "duration_s": 20}, 120))
             self.pending_suggestions.append({"call_id": call_id, "tool": name, "ts": time.time()})
             return True, "card shown; the camera will verify the break"
         if name == "start_guided_eye_exercise":
-            asyncio.create_task(self._exercise(a["type"], a["duration_s"], exercise_steps(a["type"], a["duration_s"]), call_id))
-            return True, f"{a['type']} exercise started ({a['duration_s']} s)"
+            asyncio.create_task(self._exercise(a["type"], a["duration_s"], exercise_steps(a["type"], a["duration_s"]), call_id, confirm=True))
+            return True, f"{a['type']} exercise offered ({a['duration_s']} s); it starts when the user confirms"
         if name == "play_ambient_cue":
             res = await app.tool_exec(name, a, 10)
             return (res or {}).get("ok", False), (res or {}).get("result") or (res or {}).get("error") or "UI did not respond"
@@ -521,7 +521,7 @@ class Agent:
                 await app.notice({"in": "Text enlarged", "out": "Text made smaller", "reset": "Text size reset"}[a["direction"]])
             return ok, r
         if name == "suggest_posture_reset":
-            asyncio.create_task(app.ui_request("posture_card", {"message": a["message"], "duration_s": 12}, 30))
+            asyncio.create_task(app.ui_request("posture_card", {"message": a["message"], "duration_s": 12}, 90))
             return True, "posture card shown"
         if name == "summarize_aloud":
             return await self._summarize_aloud(a["source"])
@@ -575,9 +575,17 @@ class Agent:
         asyncio.create_task(self.evaluate_outcome(cid, "start_guided_eye_exercise", "blink_rate", time.time()))
         return cid
 
-    async def _exercise(self, kind, duration_s, steps, call_id=None):
-        """Run the overlay, the voice and the camera checks together; if the user stops early, the voice stops too."""
+    async def _exercise(self, kind, duration_s, steps, call_id=None, confirm=False):
+        """Run the overlay, the voice and the camera checks together; if the user stops early, the voice stops too.
+        With `confirm` (the agent suggested it), nothing starts until the user says so."""
         app = self.app
+        if confirm:
+            res = await app.ui_request("ask_user", {"question": f"Ready for a {duration_s}-second {kind.replace('_', ' ')} exercise?",
+                                                    "options": ["Start", "Not now"], "allow_free_text": False}, 120)
+            if not res or res.get("choice") != "Start":
+                if call_id:
+                    self.db.x("UPDATE tool_calls SET result=? WHERE id=?", (json.dumps(f"{kind} exercise offered, not started"), call_id))
+                return
         gym = app.gym = Gym(kind, steps, time.time())
         asyncio.create_task(asyncio.to_thread(app.speaker.prewarm, gym.phrases()))  # live reactions play instantly
         narration = asyncio.create_task(self._narrate(steps, kind))
