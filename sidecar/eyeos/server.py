@@ -404,6 +404,7 @@ class App:
             return
         if self.ws is not None:
             await self.ws.close(4000, "replaced by a new client")
+            self.drop_requests()
         self.ws = ws
         await self.send({"type": "hello", "version": VERSION, "calibrated": bool(self.engine.cal.get("calibrated")),
                          "paused": self.settings["tracking.paused"], "settings": self.settings,
@@ -423,6 +424,13 @@ class App:
         finally:
             if self.ws is ws:
                 self.ws = None
+                self.drop_requests()
+
+    def drop_requests(self):
+        """The client that would answer these is gone (its panels with it): resolve them as 'no UI'."""
+        for fut in self.futures.values():
+            if not fut.done():
+                fut.set_result(None)
 
     async def on_message(self, m):
         t = m.get("type")
