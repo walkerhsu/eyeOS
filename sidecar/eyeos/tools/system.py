@@ -1,6 +1,7 @@
 """Python-executed macOS tools (SPEC §9.5)."""
 import asyncio
 import datetime as dt
+import re
 import subprocess
 import tempfile
 
@@ -54,11 +55,24 @@ def dark_mode():
     return ok and out == "Dark"
 
 
-def active_app():
+def frontmost():
+    """(name, bundle_id) of the frontmost app. NSWorkspace.frontmostApplication only refreshes on a run loop, which
+    the sidecar doesn't have, so it froze on whatever was in front at launch; lsappinfo asks the system each time."""
+    ok, asn = run(["lsappinfo", "front"], 2)
+    if ok and asn:
+        ok, info = run(["lsappinfo", "info", "-only", "bundleid", "-only", "name", asn], 2)
+        if ok:
+            vals = dict(re.findall(r'"(\w+)"="([^"]*)"', info))
+            if vals.get("CFBundleIdentifier"):
+                return vals.get("LSDisplayName", ""), vals["CFBundleIdentifier"]
     from AppKit import NSWorkspace
     app = NSWorkspace.sharedWorkspace().frontmostApplication()
-    name = str(app.localizedName()) if app else ""
-    bid = str(app.bundleIdentifier()) if app and app.bundleIdentifier() else ""
+    return (str(app.localizedName()) if app else "",
+            str(app.bundleIdentifier()) if app and app.bundleIdentifier() else "")
+
+
+def active_app():
+    name, bid = frontmost()
     ok, title = osa(f'tell application "System Events" to tell (first process whose frontmost is true) to get name of front window', 3)
     title = title if ok else ""
     return {"name": name, "bundle_id": bid, "window_title": title, "category": category(bid, title)}
