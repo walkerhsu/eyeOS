@@ -34,7 +34,7 @@ TRIGGERS = {
     "drowsy": (0.15, 0, 0.15, 0),
     "long_blinks": (3, 0, 3, 0),
     "sustained_squint": (0, 30, 0, 10),
-    "too_close": (40, 60, 40, 15),
+    "too_close": (40, 20, 40, 10),
     "eye_rub": (0, 0, 0, 0),
     "yawning": (2, 0, 1, 0),
     "dark_room_bright_screen": (0, 60, 0, 15),

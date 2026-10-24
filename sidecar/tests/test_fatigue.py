@@ -86,3 +86,23 @@ def test_posture_drift_vs_session_start():
         e._posture_sample(1200 + i / 2, -15.0, 0.0, 0.60)
     st = e.posture_state(1240)
     assert set(st["issues"]) >= {"slumping", "head_dropping", "leaning_in"}
+
+
+def test_short_dropout_does_not_reset_sustain(tmp_path):
+    s = DB(tmp_path / "t.db").settings()
+    t = Triggers()
+    close, gone = {"distance_cm": 30, "distance_stale": False}, {"distance_cm": None}
+    fired = []
+    for i in range(0, 26):  # 25 s close with a 2 s dropout in the middle
+        fired += [x["id"] for x in t.evaluate(gone if i in (10, 11) else close, [], s, 1000 + i)]
+    assert "too_close" in fired
+
+
+def test_too_close_skips_global_gap(tmp_path):
+    s = DB(tmp_path / "t.db").settings()
+    t = Triggers()
+    t.last_run = 1000
+    t.pending = {"too_close": {"id": "too_close"}}
+    assert t.take(1010, False, s)  # 10 s after the last run, still allowed
+    t.pending = {"long_stare": {"id": "long_stare"}}
+    assert t.take(1020, False, s) is None

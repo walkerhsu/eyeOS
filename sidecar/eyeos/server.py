@@ -589,7 +589,10 @@ class App:
                 await self.send({"type": "error", "code": "agent_unavailable",
                                  "message": f"The {self.agent.provider()} CLI wasn't found. Install it or pick another provider in Settings."})
             elif not self.agent.busy:
-                asyncio.create_task(self.agent.run([{"id": "manual", "value": None, "fired_at": time.time()}]))
+                # fold in anything queued (e.g. a too_close waiting out the gap) so the manual run sees it
+                queued = list(self.triggers.pending.values())
+                self.triggers.pending.clear()
+                asyncio.create_task(self.agent.run([{"id": "manual", "value": None, "fired_at": time.time()}] + queued))
         elif name == "check_shortcuts":
             ok, names = await asyncio.to_thread(S.focus_shortcuts_present)
             await self.send({"type": "shortcuts", "focus_ok": ok, "names": names})

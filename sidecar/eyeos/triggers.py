@@ -2,10 +2,14 @@
 from .db import TRIGGERS
 from .zen import blink_base, blink_high, blink_low
 
+GRACE_S = 3.0          # a sustained condition survives dropouts this short (one noisy frame used to reset it)
+PRIORITY = {"eye_rub", "too_close"}  # skip the global gap between runs: act while it's still happening
+
 
 class Triggers:
     def __init__(self):
         self.since = {}       # id -> ts the condition became true
+        self.false_at = {}    # id -> ts the condition last went false (for the grace period)
         self.last_fired = {}  # id -> ts
         self.pending = {}     # id -> trigger dict, merged into the next run
         self.last_run = -1e9
@@ -33,8 +37,11 @@ class Triggers:
                 thr = 180 if s["demo.enabled"] else s["agent.heartbeat_s"]
             cond, value = self._cond(tid, snap, kinds, thr, now)
             if not cond:
-                self.since.pop(tid, None)
+                self.false_at.setdefault(tid, now)
+                if now - self.false_at[tid] > GRACE_S:
+                    self.since.pop(tid, None)
                 continue
+            self.false_at.pop(tid, None)
             start = self.since.setdefault(tid, now)
             if now - start < sus:
                 continue
@@ -98,7 +105,7 @@ class Triggers:
             return None
         if ids == {"break_taken"}:
             return None  # only useful merged with something else; outcomes handle it
-        if now - self.last_run < gap and "eye_rub" not in ids:
+        if now - self.last_run < gap and not ids & PRIORITY:
             return None
         trig = list(self.pending.values())
         self.pending.clear()
