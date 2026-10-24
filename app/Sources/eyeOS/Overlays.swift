@@ -679,15 +679,20 @@ struct AskView: View {
         Card {
             ExpandableText(text: question)
             HStack(spacing: 6) {
-                ForEach(options.prefix(4), id: \.self) { o in Button(o) { answer(o, text) }.lineLimit(1) }
+                // the agent often adds its own "Not now"; we always show one, so skip it
+                ForEach(options.filter { !Self.isNotNow($0) }.prefix(4), id: \.self) { o in Button(o) { answer(o, text) }.lineLimit(1) }
                 Spacer(minLength: 0)
-                Button("Not now") { answer(nil, nil) }.buttonStyle(.borderless).foregroundStyle(.secondary)
+                Button("Not now") { answer("Not now", nil) }.buttonStyle(.borderless).foregroundStyle(.secondary)
             }
             .controlSize(.small)
             if freeText {
                 TextField("Or type…", text: $text).textFieldStyle(.roundedBorder).controlSize(.small).onSubmit { answer(nil, text) }
             }
         }
+    }
+
+    private static func isNotNow(_ s: String) -> Bool {
+        s.lowercased().trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)) == "not now"
     }
 }
 

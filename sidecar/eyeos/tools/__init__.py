@@ -64,8 +64,9 @@ CATALOG = {
         "model looks at the screen; you only get its text description, never pixels.",
         _obj(), "read", None, False, "py", None),
     "ask_user": (
-        "Ask the user a short question in a small floating panel with up to 4 short options. Times out after 60 s "
-        "(returns null). Use when unsure whether something disruptive is welcome.",
+        "Ask the user a short question in a small floating panel with up to 4 short options. A 'Not now' button is "
+        "always shown, so don't include one. Times out after 60 s (returns null). Use when unsure whether something "
+        "disruptive is welcome.",
         _obj({"question": {"type": "string", "maxLength": 200},
               "options": {"type": "array", "items": {"type": "string", "maxLength": 40}, "maxItems": 4},
               "allow_free_text": B}, ["question", "options"]),
