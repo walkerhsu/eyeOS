@@ -10,14 +10,19 @@ struct OnboardingView: View {
     @StateVar private var perms: [String: Bool] = [:]
     @StateVar private var confirmSkip = false
     @StateVar private var actualCm = ""
+    var recalibrating = false           // calibration steps only, opened from Settings
     var done: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text("Set up eyeOS").font(.title2.bold())
+                Text(recalibrating ? "Recalibrate camera" : "Set up eyeOS").font(.title2.bold())
                 Spacer()
-                Text("Step \(page + 1) of 6").foregroundStyle(.secondary)
+                if recalibrating {
+                    Button("Cancel", action: cancel).keyboardShortcut(.cancelAction)
+                } else {
+                    Text("Step \(page + 1) of 6").foregroundStyle(.secondary)
+                }
             }
             Divider()
             Group {
@@ -39,6 +44,13 @@ struct OnboardingView: View {
     func next() {
         store.calibration = nil
         if page >= 5 { UserDefaults.standard.set(true, forKey: "onboarded"); page = 0; done() } else { page += 1 }
+    }
+
+    func cancel() {
+        store.overlays.hideCalibrationDots()
+        store.calibration = nil
+        page = 0
+        done()
     }
 
     var keys: some View {
@@ -156,6 +168,7 @@ struct OnboardingView: View {
             Spacer()
             HStack {
                 Button("Back") { store.calibration = nil; page -= 1 }
+                    .disabled(recalibrating && step == 1)
                 Spacer()
                 Button(phase == "failed" ? "Retry" : "Start") {
                     var args: J = ["step": step]

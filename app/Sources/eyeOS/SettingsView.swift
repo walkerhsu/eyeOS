@@ -7,6 +7,7 @@ struct SettingsView: View {
     @StateVar private var anthropic = Keychain.get("anthropic") ?? ""
     @StateVar private var repo = UserDefaults.standard.string(forKey: "sidecar.repo_path") ?? Sidecar.devRepo
     @StateVar private var showOnboarding = false
+    @StateVar private var recalibrating = false
 
     private let triggerIds = ["low_blink_rate", "long_stare", "incomplete_blinks", "drowsy", "long_blinks", "sustained_squint",
                               "too_close", "eye_rub", "yawning", "dark_room_bright_screen", "no_break", "break_taken", "heartbeat"]
@@ -17,8 +18,29 @@ struct SettingsView: View {
     }
     func int(_ k: String) -> Binding<Int> { Binding(get: { store.settings.int(k) ?? 0 }, set: { store.set(k, $0) }) }
 
+    func recalibrate() {
+        store.calibration = nil
+        UserDefaults.standard.set(3, forKey: "onboarding.page")    // first calibration page
+        recalibrating = true
+        showOnboarding = true
+    }
+
     var body: some View {
         Form {
+            Section("Camera") {
+                LabeledContent("Status") {
+                    Text(store.status.bool("calibrated") ? "✓ Calibrated" : "Not calibrated")
+                        .foregroundStyle(store.status.bool("calibrated") ? .green : .orange)
+                }
+                Button(action: recalibrate) {
+                    Label("Recalibrate camera", systemImage: "camera.metering.center.weighted")
+                        .font(.headline.bold())
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(!store.connected)
+            }
             Section("General") {
                 Toggle("Show camera image", isOn: bool("ui.show_camera_image"))
                 Toggle("Pause tracking (releases the camera)", isOn: bool("tracking.paused"))
@@ -89,10 +111,6 @@ struct SettingsView: View {
                     Text(["ear_open", "blink_rate", "blink_duration_ms", "squint_score", "w_px_cal", "distance_cm"]
                         .map { "\($0) \(fmt(store.baseline.num($0), 2))" }.joined(separator: " · ")).font(.caption.monospaced())
                 }
-                HStack {
-                    ForEach(1...3, id: \.self) { s in Button("Recalibrate step \(s)") { showOnboarding = true; store.calibration = nil
-                        UserDefaults.standard.set(2 + s, forKey: "onboarding.page") } }
-                }
             }
             Section("Keys") {
                 SecureField("Cartesia API key (voice)", text: $cartesia)
@@ -116,11 +134,13 @@ struct SettingsView: View {
                 if let d = store.doctor {
                     Text(d.bool("eligible") ? "Eligible" : "Not eligible: \(String(describing: d["detail"] ?? ""))").font(.caption)
                 }
-                Button("Run onboarding again") { UserDefaults.standard.set(0, forKey: "onboarding.page"); showOnboarding = true }
+                Button("Run onboarding again") {
+                    UserDefaults.standard.set(0, forKey: "onboarding.page"); recalibrating = false; showOnboarding = true
+                }
             }
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
-        .sheet(isPresented: $showOnboarding) { OnboardingView(done: { showOnboarding = false }) }
+        .sheet(isPresented: $showOnboarding) { OnboardingView(recalibrating: recalibrating, done: { showOnboarding = false }) }
     }
 }
