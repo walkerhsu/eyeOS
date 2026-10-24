@@ -460,7 +460,7 @@ These are sent at 15 fps **only when** setting `ui.show_camera_image == true`.
 |---|---|
 | `ui_response` | `{request_id, result}` |
 | `tool_result` | `{request_id, ok, result \| error}` |
-| `command` | `{name, args?}`, where `name` is one of `pause {minutes?}` (with `minutes`, tracking resumes by itself; `status.paused_until` holds the deadline), `resume`, `break_now` (shows a 20 s `look_away_card` the user asked for), `shutdown`, `calibrate {step}`, `reset_approvals`, `seed_demo`, `wipe_demo`, `generate_summary {date?}`, `audio_control {action: pause\|resume\|stop}`, `run_agent_now` (debug), `zen {on: bool}` (start / end Zen manually) |
+| `command` | `{name, args?}`, where `name` is one of `pause {minutes?}` (with `minutes`, tracking resumes by itself; `status.paused_until` holds the deadline), `resume`, `break_now` (shows a 20 s `look_away_card` the user asked for), `exercise {type, duration_s?}` (a guided exercise the user started: no approval, logged as a `tool_calls` row with `approval='user_started'` and no run, measured like the agent's; default 30 s, 20–120), `shutdown`, `calibrate {step}`, `reset_approvals`, `seed_demo`, `wipe_demo`, `generate_summary {date?}`, `audio_control {action: pause\|resume\|stop}`, `run_agent_now` (debug), `zen {on: bool}` (start / end Zen manually) |
 | `set_setting` | `{key, value}` |
 | `get_settings` | `{}` |
 | `get_approvals` | `{}` |

@@ -81,6 +81,11 @@ DONE_TEXT = {"palming": "The exercise is done. Open your eyes slowly and blink a
              "deliberate_blink": "The exercise is done. You can open your eyes and carry on."}
 REMIND_AFTER_S = 10
 
+
+def exercise_steps(kind, duration_s):
+    """The script for one exercise, each step timed as its share of the total."""
+    return [{"text": t, "seconds": max(3, round(f * duration_s))} for t, f in EXERCISES[kind]]
+
 DOCTOR_TEXT = ("Over the past week your eyes have shown signs often linked to eye strain or dryness ({evidence}). "
                "eyeOS can't diagnose anything, but it might be worth mentioning to an eye doctor or optometrist.")
 
@@ -270,11 +275,13 @@ class Agent:
         app, db = self.app, self.db
         snap = app.snapshot
         active = app.active
-        recent = db.q("""SELECT c.id, c.ts, c.name AS tool, c.args, c.status, o.metric, o.before, o.after, o.verdict
+        recent = db.q("""SELECT c.id, c.ts, c.name AS tool, c.args, c.status, c.approval, o.metric, o.before, o.after, o.verdict
                          FROM tool_calls c LEFT JOIN outcomes o ON o.call_id = c.id
                          ORDER BY c.id DESC LIMIT 10""")
         for r in recent:
             r["args"] = json.loads(r["args"] or "{}")
+            if r.pop("approval") == "user_started":
+                r["started_by"] = "user"  # from the menu bar / HUD, not one of your actions
             meta = T.CATALOG.get(r["tool"])
             if r["verdict"]:
                 r["outcome"] = {"metric": r.pop("metric"), "before": r.pop("before"), "after": r.pop("after"),
@@ -472,8 +479,7 @@ class Agent:
             self.pending_suggestions.append({"call_id": call_id, "tool": name, "ts": time.time()})
             return True, "card shown; the camera will verify the break"
         if name == "start_guided_eye_exercise":
-            steps = [{"text": t, "seconds": max(3, round(f * a["duration_s"]))} for t, f in EXERCISES[a["type"]]]
-            asyncio.create_task(self._exercise(a["type"], a["duration_s"], steps))
+            asyncio.create_task(self._exercise(a["type"], a["duration_s"], exercise_steps(a["type"], a["duration_s"])))
             return True, f"{a['type']} exercise started ({a['duration_s']} s)"
         if name == "play_ambient_cue":
             res = await app.tool_exec(name, a, 10)
@@ -546,6 +552,19 @@ class Agent:
         ok, _ = await S.arun(S.set_focus, False)
         if ok:
             self.state["focus_on"] = False
+
+    async def user_exercise(self, kind, duration_s):
+        """An exercise the user started from the menu bar or HUD. No approval (the click is consent), but it is
+        logged and measured like the agent's own, so learning sees what helps this user."""
+        duration_s = max(20, min(120, int(duration_s)))
+        args = {"type": kind, "duration_s": duration_s}
+        cid = self.db.x("""INSERT INTO tool_calls (run_id, ts, name, args, status, tier, approval, result)
+                           VALUES (NULL, ?, 'start_guided_eye_exercise', ?, 'done', 'user', 'user_started', ?)""",
+                        (time.time(), json.dumps(args), json.dumps(f"{kind} exercise started by the user ({duration_s} s)")))
+        self.app.log_event("system", None, None, {"event": "exercise", "by": "user", **args})
+        asyncio.create_task(self._exercise(kind, duration_s, exercise_steps(kind, duration_s)))
+        asyncio.create_task(self.evaluate_outcome(cid, "start_guided_eye_exercise", "blink_rate", time.time()))
+        return cid
 
     async def _exercise(self, kind, duration_s, steps):
         """Run the overlay and the voice together; if the user stops early, the voice stops too."""

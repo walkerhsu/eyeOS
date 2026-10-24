@@ -18,7 +18,7 @@ import cv2
 
 from . import demo
 from . import tools as T
-from .agent import CLIS, Agent
+from .agent import CLIS, EXERCISES, Agent
 from .db import DB, TRIGGERS, validate_setting
 from .metrics import Engine
 from . import reflection as R
@@ -652,6 +652,10 @@ class App:
                     60 * minutes, lambda: asyncio.ensure_future(self.command("resume", {})))
                 await self.send_status(force=True)
             self.log_event("system", None, None, {"event": name, **({"minutes": minutes} if minutes else {})})
+        elif name == "exercise":  # started by the user from the menu bar / HUD
+            if args.get("type") not in EXERCISES:
+                return await self.send({"type": "error", "code": "bad_exercise", "message": f"unknown exercise {args.get('type')!r}"})
+            await self.agent.user_exercise(args["type"], args.get("duration_s") or 30)
         elif name == "break_now":
             # the user asked for a break from the menu bar / HUD; the camera confirms it like any other
             asyncio.create_task(self.ui_request("look_away_card", {"message": "Look at something 20 feet away for 20 seconds.",
