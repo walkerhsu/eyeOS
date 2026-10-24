@@ -35,6 +35,10 @@ struct MenuBarPanel: View {
             }
             Divider()
             actions
+            Toggle(isOn: Binding(get: { store.setting("ui.show_hud") }, set: { store.set("ui.show_hud", $0) })) {
+                Label("Floating HUD over other apps", systemImage: "capsule").font(.callout)
+            }
+            .toggleStyle(.switch).controlSize(.mini).disabled(!store.connected)
             Divider()
             footer
         }

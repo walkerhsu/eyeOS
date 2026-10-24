@@ -57,6 +57,9 @@ struct SettingsView: View {
             SettingRow("Show camera on the Live page", detail: "Hide it for a cleaner score dashboard") {
                 Toggle("", isOn: bool("ui.show_camera_image")).labelsHidden().toggleStyle(.switch)
             }
+            SettingRow("Floating HUD", detail: "A small pill over other apps; fades when all is fine, hides in Zen and meetings") {
+                Toggle("", isOn: bool("ui.show_hud")).labelsHidden().toggleStyle(.switch)
+            }
             SettingRow("Pause tracking", detail: "Releases the camera") {
                 Toggle("", isOn: bool("tracking.paused")).labelsHidden().toggleStyle(.switch)
             }

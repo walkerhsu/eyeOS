@@ -4,7 +4,10 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.setActivationPolicy(.regular)  // needed when launched as a bare SwiftPM executable
-        MainActor.assumeIsolated { Store.shared.sidecar.start() }
+        MainActor.assumeIsolated {
+            Store.shared.sidecar.start()
+            Store.shared.hud.start()
+        }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { false }  // closes to the menu bar
     func applicationShouldHandleReopen(_ s: NSApplication, hasVisibleWindows: Bool) -> Bool {

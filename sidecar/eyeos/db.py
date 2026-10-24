@@ -62,6 +62,7 @@ _tier = lambda v: v in ("auto", "ask", "blocked")
 # key -> (default, validator)
 SETTINGS = {
     "ui.show_camera_image": (True, _bool),
+    "ui.show_hud": (True, _bool),                   # ambient floating HUD over other apps
     "tracking.paused": (False, _bool),
     "agent.enabled": (True, _bool),
     "agent.model": ("claude-sonnet-5-5", lambda v: v in ("claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5")),
