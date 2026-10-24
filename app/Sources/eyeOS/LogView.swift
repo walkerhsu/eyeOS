@@ -31,26 +31,32 @@ struct LogView: View {
     var body: some View {
         let all = allItems
         let shown = all.filter { matches($0, filter) }
+        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 12) {
+            AppBar(title: "Log", subtitle: dayLabel) { dayControls }
+            // the day chart stays put: brushing it scrolls the feed below, never the chart itself
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    SectionTitle(text: "Day at a glance", icon: "chart.xyaxis.line")
+                    Spacer()
+                    if let r = range {
+                        Text("\(r.lowerBound.formatted(date: .omitted, time: .shortened)) – \(r.upperBound.formatted(date: .omitted, time: .shortened))")
+                            .font(.caption.monospacedDigit()).foregroundStyle(.teal)
+                        Button { range = nil } label: { Label("Clear", systemImage: "xmark.circle.fill") }
+                            .buttonStyle(.borderless)
+                    } else {
+                        Text("Drag across the chart (or click) to jump to that time").font(.caption).foregroundStyle(.tertiary)
+                    }
+                }
+                Timeline(range: $range).frame(height: 170)
+            }
+            .card(padding: 14)
+        }
+        .padding(.horizontal, 20).padding(.top, 20)
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10, pinnedViews: [.sectionHeaders]) {
-                    AppBar(title: "Log", subtitle: dayLabel) { dayControls }
-                        .padding(.bottom, 4)
                     if let text = store.summary?.str("text") { summaryCard(text) }
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            SectionTitle(text: "Day at a glance", icon: "chart.xyaxis.line")
-                            Spacer()
-                            if range != nil {
-                                Button { range = nil } label: { Label("Clear selection", systemImage: "xmark.circle.fill") }
-                                    .buttonStyle(.borderless)
-                            } else {
-                                Text("Drag across the chart to jump to that time").font(.caption).foregroundStyle(.tertiary)
-                            }
-                        }
-                        Timeline(range: $range).frame(height: 190)
-                    }
-                    .card(padding: 14)
                     Section {
                         ForEach(shown) { item in
                             switch item {
@@ -66,7 +72,7 @@ struct LogView: View {
                         filterBar(all).padding(.vertical, 8).background(.background)
                     }
                 }
-                .padding(20)
+                .padding(.horizontal, 20).padding(.bottom, 20)
             }
             .onChange(of: range) {
                 // brushing the chart jumps the feed to that moment and opens the run there
@@ -75,6 +81,7 @@ struct LogView: View {
                     withAnimation { proxy.scrollTo(first.id, anchor: .top) }
                 }
             }
+        }
         }
         .onChange(of: store.logDay) { store.loadDay() }
         .onChange(of: store.summary?.str("text")) { summarizing = false }
@@ -220,16 +227,35 @@ private struct TimeLabel: View {
 
 struct EventCard: View {
     let e: J
+    @StateVar private var expanded = false
+
+    var highlights: [J] {
+        let d = e.obj("details") ?? [:]
+        if let rules = d["rules"] as? [String] {  // a reflection: the rules it learned, plus what to try next
+            return rules.map { ["icon": "brain.head.profile", "text": $0, "level": "warn"] }
+                + (d.str("try_next").map { [["icon": "lightbulb", "text": "Try: " + $0, "level": "good"]] } ?? [])
+        }
+        return d.obj("recap")?.arr("highlights") ?? []
+    }
 
     var body: some View {
-        LogCardShell(icon: icon, color: color, title: title, subtitle: subtitle, accent: isErrorEvent(e) ? .pink : nil) {
+        LogCardShell(icon: icon, color: color, title: title, subtitle: subtitle,
+                     accent: isErrorEvent(e) ? .pink : expanded ? color : nil) {
             if let v = valueText {
                 Text(v).font(.caption.monospacedDigit().weight(.semibold))
                     .padding(.horizontal, 8).padding(.vertical, 3)
                     .background(color.opacity(0.14), in: Capsule()).foregroundStyle(color)
             }
             TimeLabel(ts: e.num("ts")).frame(width: 40, alignment: .trailing)
-        } detail: { EmptyView() }
+            if !highlights.isEmpty {
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+            }
+        } detail: {
+            if expanded { ZenHighlights(items: highlights).padding(.top, 10).padding(.leading, 46) }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { if !highlights.isEmpty { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } } }
     }
 
     var event: String { e.obj("details")?.str("event") ?? "" }
@@ -243,7 +269,13 @@ struct EventCard: View {
         case "yawn": "Yawn"
         case "blink_anomaly": event == "eyes_closed" ? "Eyes closed" : "Long blink"
         case "zen": event == "zen_start" ? "Zen started" : "Zen ended"
-        default: humanize(event.isEmpty ? "system" : event)
+        default:
+            switch event {
+            case "situation": "Now: " + humanize(e.obj("details")?.str("situation") ?? "")
+            case "deferred": "Held a nudge"
+            case "reflection": "Reflection"
+            default: humanize(event.isEmpty ? "system" : event)
+            }
         }
     }
 
@@ -258,8 +290,21 @@ struct EventCard: View {
         case "blink_anomaly": return value.map { "Lasted \(fmt($0, 1)) s" } ?? ""
         case "zen":
             if event == "zen_start" { return d.str("source") == "manual" ? "You started Zen" : "Deep focus detected" }
-            return value.map { "\(duration($0)) of quiet focus" } ?? ""
-        default: return isErrorEvent(e) ? "Something went wrong" : "System"
+            var parts = [value.map { "\(duration($0)) of quiet focus" } ?? "Quiet focus"]
+            if let r = d.obj("recap") {
+                if let n = r.int("alerts_held_total"), n > 0 { parts.append("\(n) alert\(n == 1 ? "" : "s") held") }
+                if let c = r.int("blink_change_pct"), c <= -10 { parts.append("blinks \(c)%") }
+                if let n = r.int("rubs"), n > 0 { parts.append("\(n) rub\(n == 1 ? "" : "s")") }
+            }
+            return parts.joined(separator: " · ")
+        default:
+            if isErrorEvent(e) { return "Something went wrong" }
+            switch event {
+            case "situation": return [d.str("activity"), d.str("reason")].compactMap { $0 }.joined(separator: " · ")
+            case "deferred": return d.str("reason") ?? ""
+            case "reflection": return d.str("summary") ?? ""
+            default: return "System"
+            }
         }
     }
 
@@ -274,14 +319,16 @@ struct EventCard: View {
         switch e.str("kind") {
         case "trigger": "bolt.fill"; case "break": "figure.walk"; case "rub": "hand.raised.fill"; case "yawn": "mouth"
         case "blink_anomaly": "eye.slash"; case "zen": "moon.stars.fill"
-        default: isErrorEvent(e) ? "exclamationmark.triangle.fill" : "gearshape"
+        default:
+            isErrorEvent(e) ? "exclamationmark.triangle.fill" :
+            ["situation": "lock.display", "deferred": "hourglass", "reflection": "sparkles"][event] ?? "gearshape"
         }
     }
 
     var color: Color {
         switch e.str("kind") {
         case "trigger": .yellow; case "break": .green; case "zen": .indigo; case "rub", "blink_anomaly", "yawn": .orange
-        default: isErrorEvent(e) ? .pink : .gray
+        default: isErrorEvent(e) ? .pink : ["situation": Color.mint, "deferred": .indigo, "reflection": .purple][event] ?? .gray
         }
     }
 }
@@ -510,6 +557,7 @@ struct Timeline: View {
             series("PERCLOS", rows, "perclos", .purple)
             series("Distance cm", rows, "distance_cm", .orange)
         }
+        .onChange(of: range) { if range == nil { selection = nil } }
     }
 
     func series(_ title: String, _ rows: [J], _ key: String, _ color: Color, markers: Bool = false) -> some View {
@@ -548,9 +596,27 @@ struct Timeline: View {
         .chartXScale(domain: dayDomain)
         .chartYAxis { AxisMarks(position: .leading) }
         .chartLegend(.hidden)
-        .chartOverlay { _ in Text(title).font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing) }
-        .chartXSelection(range: $selection)
-        .onChange(of: selection) { if let s = selection { range = s } }
+        .chartOverlay { proxy in
+            GeometryReader { geo in
+                ZStack(alignment: .topTrailing) {
+                    Rectangle().fill(.clear).contentShape(Rectangle())
+                        .gesture(DragGesture(minimumDistance: 0).onChanged { v in
+                            // draw the selection while dragging; only commit (and move the feed) on release
+                            guard let plot = proxy.plotFrame else { return }
+                            let x0 = v.startLocation.x - geo[plot].minX, x1 = v.location.x - geo[plot].minX
+                            if let a: Date = proxy.value(atX: min(x0, x1)), let b: Date = proxy.value(atX: max(x0, x1)) {
+                                selection = a...b
+                            }
+                        }.onEnded { v in
+                            guard let s = selection else { return }
+                            // a click (no real drag) selects a few minutes around that moment
+                            range = abs(v.translation.width) < 4
+                                ? s.lowerBound.addingTimeInterval(-120)...s.lowerBound.addingTimeInterval(120) : s
+                        })
+                    Text(title).font(.caption2).foregroundStyle(.secondary).allowsHitTesting(false)
+                }
+            }
+        }
     }
 
     var dayDomain: ClosedRange<Date> {

@@ -1,10 +1,16 @@
 """Deterministic trigger engine + rate-limited queue (SPEC §5)."""
 from .db import TRIGGERS
+from .zen import blink_base, blink_high, blink_low
+
+GRACE_S = 3.0          # a sustained condition survives dropouts this short (one noisy frame used to reset it)
+PRIORITY = {"eye_rub", "too_close"}  # skip the global gap and the conductor's "not now": act while it's happening
+STALE_S = 600          # a nudge held this long (e.g. through a meeting) is no longer relevant
 
 
 class Triggers:
     def __init__(self):
         self.since = {}       # id -> ts the condition became true
+        self.false_at = {}    # id -> ts the condition last went false (for the grace period)
         self.last_fired = {}  # id -> ts
         self.pending = {}     # id -> trigger dict, merged into the next run
         self.last_run = -1e9
@@ -32,8 +38,11 @@ class Triggers:
                 thr = 180 if s["demo.enabled"] else s["agent.heartbeat_s"]
             cond, value = self._cond(tid, snap, kinds, thr, now)
             if not cond:
-                self.since.pop(tid, None)
+                self.false_at.setdefault(tid, now)
+                if now - self.false_at[tid] > GRACE_S:
+                    self.since.pop(tid, None)
                 continue
+            self.false_at.pop(tid, None)
             start = self.since.setdefault(tid, now)
             if now - start < sus:
                 continue
@@ -47,8 +56,16 @@ class Triggers:
 
     def _cond(self, tid, m, kinds, thr, now):
         g = m.get
-        if tid == "low_blink_rate":
-            return g("blink_rate") is not None and m["blink_rate"] < thr, g("blink_rate")
+        base = blink_base({"blink_rate": g("baseline_blink_rate")})
+        if tid == "low_blink_rate":  # relative to your normal; blink_rate is None while talking or on a call
+            return g("blink_rate") is not None and m["blink_rate"] < blink_low(base, thr), g("blink_rate")
+        if tid == "frequent_blinks":
+            return g("blink_rate") is not None and m["blink_rate"] > blink_high(base, thr), g("blink_rate")
+        if tid == "blink_decline":
+            tr = g("blink_trend") or {}
+            return bool(tr.get("declining")) and (tr.get("drop_pct") or 0) >= thr, tr.get("drop_pct")
+        if tid == "posture_drift":
+            return len(g("posture_issues") or []) >= thr, len(g("posture_issues") or [])
         if tid == "long_stare":
             return (g("current_stare_s") or 0) > thr, g("current_stare_s")
         if tid == "incomplete_blinks":
@@ -77,9 +94,17 @@ class Triggers:
             return bool(g("face_present")), None
         return False, None
 
-    def take(self, now, busy, s):
-        """Pop the merged trigger list if a run may start now, else None."""
+    def take(self, now, busy, s, interruptible=True):
+        """Pop the merged trigger list if a run may start now, else None.
+
+        interruptible: the conductor's call on whether this is a good moment. When it isn't, non-priority triggers
+        stay queued (and expire after STALE_S) instead of waking the agent.
+        """
+        for tid in [k for k, t in self.pending.items() if now - t.get("fired_at", now) > STALE_S]:
+            del self.pending[tid]
         if busy or not self.pending:
+            return None
+        if not interruptible and not set(self.pending) & PRIORITY:
             return None
         gap = 30 if s["demo.enabled"] else s["agent.global_gap_s"]
         hb = 180 if s["demo.enabled"] else s["agent.heartbeat_s"]
@@ -89,7 +114,7 @@ class Triggers:
             return None
         if ids == {"break_taken"}:
             return None  # only useful merged with something else; outcomes handle it
-        if now - self.last_run < gap and "eye_rub" not in ids:
+        if now - self.last_run < gap and not ids & PRIORITY:
             return None
         trig = list(self.pending.values())
         self.pending.clear()

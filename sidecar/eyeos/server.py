@@ -21,10 +21,12 @@ from . import tools as T
 from .agent import CLIS, Agent
 from .db import DB, TRIGGERS, validate_setting
 from .metrics import Engine
+from . import reflection as R
+from .screen_watch import ScreenWatch
 from .tools import system as S
 from .triggers import Triggers
 from .tts import Speaker
-from .zen import Zen, eye_score
+from .zen import Zen, eye_score, recap_stats
 
 VERSION = "0.1.0"
 EVENT_KIND = {"rub": "rub", "yawn": "yawn", "break": "break", "eyes_closed": "blink_anomaly", "blink": "blink_anomaly"}
@@ -46,6 +48,8 @@ class App:
         self.today = {}
         self.speaker = Speaker(lambda: self.settings)
         self.agent = Agent(self)
+        self.screen = ScreenWatch(lambda: self.settings, lambda: bool(self.snapshot.get("face_present")),
+                                  self.conductor_metrics, self.on_conductor)
         self.ws = None
         self.loop = None
         self.futures = {}
@@ -114,13 +118,14 @@ class App:
                         continue
                     f = vision.process(bgr, ts)
                     if rec:
-                        rec.write(json.dumps({k: f[k] for k in ("ts", "w", "h", "face", "blend", "transform", "hands", "luma")}) + "\n")
+                        rec.write(json.dumps({k: f.get(k) for k in ("ts", "w", "h", "face", "blend", "transform", "hands", "luma", "pose")}) + "\n")
                 with self.lock:
                     events = self.engine.update(f)
                 self.frame = bgr
                 if f["face"] is not None or f["hands"] is not None:
                     self.landmarks = {"face": f["face"] if f["face"] is not None else None,
                                       "hands": f["hands"] if f["hands"] is not None else (self.landmarks or {}).get("hands", []),
+                                      "pose": f["pose"] if f.get("pose") is not None else (self.landmarks or {}).get("pose"),
                                       "ts": f["ts"], "o": self.engine.last.get("o") if f["face"] is not None else None}
                 if f["face"] is None and self.landmarks:
                     self.landmarks["face"] = None
@@ -172,6 +177,9 @@ class App:
                 with self.lock:
                     snap = self.engine.snapshot(time.time())
                 snap["app_category"] = self.active.get("category")
+                if snap["app_category"] == "call":  # talking on calls raises blinking ~50%: don't judge blinks then
+                    snap["blink_rate"] = snap["incomplete_pct"] = None
+                    snap["talking"] = True
                 snap["eye_score"] = eye_score(snap, self.engine.cal)
                 snap["zen"] = self.zen.active
                 self.snapshot = snap
@@ -188,7 +196,14 @@ class App:
                 if self.zen.active:
                     self.triggers.pending.clear()  # Zen: keep recording, never wake the agent
                     continue
-                run = self.triggers.take(time.time(), self.agent.busy, s)
+                c = self.screen.fresh(90)
+                interruptible = not c or c.get("interruptibility") is None or c["interruptibility"] >= 0.35
+                if not interruptible and self.triggers.pending and set(self.triggers.pending) != self._held:
+                    self._held = set(self.triggers.pending)  # log each held batch once
+                    self.log_event("system", None, c["interruptibility"],
+                                   {"event": "deferred", "triggers": sorted(self._held),
+                                    "reason": f"{(c.get('situation') or 'busy').replace('_', ' ')}: {c.get('reason') or ''}".strip(": ")})
+                run = self.triggers.take(time.time(), self.agent.busy, s, interruptible)
                 if run and s["agent.enabled"] and self.agent.available():
                     asyncio.create_task(self.agent.run(run))
             except Exception:  # noqa: BLE001
@@ -211,7 +226,8 @@ class App:
                 input_age = None
             if snap.get("calibrated") and not self.settings["tracking.paused"]:
                 change = self.zen.tick(time.time(), snap, input_age, self.active.get("category"),
-                                       self.settings["zen.enter_min"] * 60, self.settings["zen.enabled"])
+                                       self.settings["zen.enter_min"] * 60, self.settings["zen.enabled"],
+                                       self.screen.recent(5) if self.settings["privacy.local_vision"] else None)
                 if change:
                     await self.zen_changed(*change)
             if n % 30 == 1:
@@ -225,6 +241,15 @@ class App:
                     self.active = await asyncio.to_thread(S.active_app)
                 except Exception:  # noqa: BLE001
                     pass
+            if n % 5 == 0:  # display just went to sleep: the user stepped away, a good time to reflect
+                try:
+                    import Quartz
+                    asleep = bool(Quartz.CGDisplayIsAsleep(Quartz.CGMainDisplayID()))
+                except Exception:  # noqa: BLE001
+                    asleep = False
+                if asleep and not self._display_asleep:
+                    asyncio.create_task(self.maybe_reflect("display_off"))
+                self._display_asleep = asleep
             if n % 30 == 1 or self._screen_now:
                 self._screen_now = False
                 lum, dark = await asyncio.to_thread(S.screen_luma), await asyncio.to_thread(S.dark_mode)
@@ -232,6 +257,9 @@ class App:
                     self.engine.set_screen(lum, dark)
 
     _screen_now = False
+    _held = set()
+    _display_asleep = False
+    _reflecting = False
 
     def refresh_screen_soon(self):
         self._screen_now = True
@@ -300,17 +328,76 @@ class App:
                     fut.set_result(None)
             self.log_event("zen", None, None, {"event": "zen_start", "source": info["source"]})
         else:
+            info["recap"] = self.zen_stats(info["since"], time.time())
             self.log_event("zen", None, info["duration_s"], {"event": "zen_end", **info})
-            min_s = 60 if self.settings["demo.enabled"] else 300
+            min_s = 20 if self.settings["demo.enabled"] else 60
             if info["reason"] != "away" and info["duration_s"] >= min_s:
                 asyncio.create_task(self.zen_recap(info))
         self.today = self.today_stats()
         await self.send_status(force=True)
 
+    # ---------- reflection (display off, or catch-up at launch) ----------
+
+    async def maybe_reflect(self, reason, delay=0, force=False):
+        await asyncio.sleep(delay)
+        if self._reflecting or not self.agent.available():
+            return None
+        ok, since = R.due(self.db)
+        if not ok and not force:
+            return None
+        since = since if ok else (R.last_period_end(self.db) or time.time() - R.LOOKBACK_S)
+        self._reflecting = True
+        try:
+            until = time.time()
+            stats = await asyncio.to_thread(R.gather, self.db, since, until)
+            result = R.parse(await self.agent.complete(R.SYSTEM, json.dumps(stats, default=str)))
+            R.save(self.db, since, until, reason, result, stats)
+            self.log_event("system", None, len(result["rules"]),
+                           {"event": "reflection", "reason": reason, "summary": result["summary"],
+                            "rules": [r["rule"] for r in result["rules"]], "try_next": result.get("try_next")})
+            await self.send_preferences()
+            return result
+        except Exception:  # noqa: BLE001 - the period stays unreflected and is retried next time
+            traceback.print_exc()
+            return None
+        finally:
+            self._reflecting = False
+
+    # ---------- conductor (on-device, every 30 s) ----------
+
+    def conductor_metrics(self):
+        """The short metric summary the conductor sees next to the screenshot."""
+        s = self.snapshot
+        return {"face_present": s.get("face_present"), "blink_rate": s.get("blink_rate"),
+                "your_normal_blink_rate": self.engine.cal.get("blink_rate"), "eye_score": s.get("eye_score"),
+                "distance_cm": s.get("distance_cm"), "posture_issues": s.get("posture_issues"),
+                "talking": s.get("talking"), "since_real_break_min": round((s.get("since_real_break_s") or 0) / 60),
+                "session_min": round((s.get("session_s") or 0) / 60), "typing": self.typing(),
+                "app": {k: self.active.get(k) for k in ("name", "category")}, "zen": self.zen.active,
+                "pending_nudges": list(self.triggers.pending)}
+
+    def on_conductor(self, d):
+        prev = self.screen.history[-2] if len(self.screen.history) > 1 else None
+        self.db.x("INSERT OR REPLACE INTO conductor_log (ts, data) VALUES (?, ?)", (d["ts"], json.dumps(d)))
+        if d.get("situation") and (not prev or prev.get("situation") != d["situation"]):
+            self.log_event("system", None, d.get("interruptibility"),
+                           {"event": "situation", "situation": d["situation"], "focus": d.get("focus"),
+                            "activity": d.get("activity"), "reason": d.get("reason")}, d["ts"])
+
+    def zen_stats(self, since, until):
+        """Everything recorded while Zen kept eyeOS silent: metrics, events, and the alerts it held back."""
+        rows = [json.loads(r["data"]) for r in self.db.q(
+            "SELECT data FROM metrics_1hz WHERE ts >= ? AND ts <= ? AND seeded=0 ORDER BY ts", (since, until))]
+        events = self.db.q("SELECT kind, trigger_id, value FROM events WHERE ts >= ? AND ts <= ? AND seeded=0 ORDER BY ts",
+                           (since, until))
+        return recap_stats(rows, events, self.engine.cal.get("blink_rate"),
+                           self.settings["triggers.too_close.threshold"])
+
     async def zen_recap(self, info):
         base = self.engine.cal.get("blink_rate")
         br = info.get("blink_rate")
-        rest = info["duration_s"] >= 1200 or (br is not None and base and br < 0.7 * base)
+        bad = any(h["level"] == "bad" for h in info["recap"]["highlights"])
+        rest = info["duration_s"] >= 1200 or bad or (br is not None and base and br < 0.7 * base)
         res = await self.ui_request("zen_recap", {**info, "baseline_blink_rate": base, "suggest_rest": bool(rest)}, 180)
         self.log_event("system", None, None, {"event": "zen_recap", "result": res})
 
@@ -360,6 +447,10 @@ class App:
         if step == 1:
             cal["w_px_cal"] = round(statistics.median(s["w_px"] for s in face), 3)
             cal["distance_cm"] = float(args.get("distance_cm") or self.settings["calibration.distance_cm"])
+            with self.lock:  # "sit at arm's length" is a good-posture moment: posture compares against it at first
+                ref = self.engine.posture_reference(3)
+            if ref:
+                cal["posture_ref"] = [None if v is None else round(v, 4) for v in ref]
         elif step == 2:
             def med(rows, k):
                 v = [r[k] for r in rows if k in r]
@@ -412,7 +503,7 @@ class App:
              "agent_enabled": self.settings["agent.enabled"], "agent_available": self.agent.available(),
              "agent_provider": self.agent.provider(), "agent_clis": CLIS,
              "has_tts_key": bool(os.environ.get("CARTESIA_API_KEY")), "active_app": self.active, "last_action": self.last_action,
-             "zen": self.zen.state(time.time()), "today": self.today}
+             "zen": self.zen.state(time.time()), "today": self.today, "local_vision": self.screen.state()}
         key = json.dumps(s, sort_keys=True, default=str)
         if force or key != self.last_status:
             self.last_status = key
@@ -519,6 +610,9 @@ class App:
         elif t == "history_request":
             await self.history_reply(m)
         elif t == "delete_preference":
+            row = self.db.q("SELECT key FROM preferences WHERE id=?", (int(m.get("id")),))
+            if row and row[0]["key"]:  # a learned rule the user removed: don't learn it again
+                await self.set_setting("memory.suppressed", self.settings["memory.suppressed"] + [row[0]["key"]])
             self.db.x("DELETE FROM preferences WHERE id=?", (int(m.get("id")),))
             await self.send_preferences()
         elif t == "command":
@@ -531,6 +625,8 @@ class App:
             return await self.send({"type": "error", "code": "bad_setting", "message": f"invalid setting {key}={value!r}"})
         self.db.set_setting(key, value)
         self.settings = self.db.settings()
+        if key.startswith("privacy."):
+            self.screen.wake.set()
         if key.startswith("advanced."):
             with self.lock:
                 self.engine.adv.update(self._adv())
@@ -572,12 +668,22 @@ class App:
             change = self.zen.set_manual(bool(args.get("on")), time.time())
             if change:
                 await self.zen_changed(*change)
+        elif name == "describe_screen":
+            async def go():
+                await self.screen.describe_now()
+                await self.send_status(force=True)
+            asyncio.create_task(go())
+        elif name == "reflect_now":
+            asyncio.create_task(self.maybe_reflect("manual", force=True))
         elif name == "run_agent_now":
             if not self.agent.available():
                 await self.send({"type": "error", "code": "agent_unavailable",
                                  "message": f"The {self.agent.provider()} CLI wasn't found. Install it or pick another provider in Settings."})
             elif not self.agent.busy:
-                asyncio.create_task(self.agent.run([{"id": "manual", "value": None, "fired_at": time.time()}]))
+                # fold in anything queued (e.g. a too_close waiting out the gap) so the manual run sees it
+                queued = list(self.triggers.pending.values())
+                self.triggers.pending.clear()
+                asyncio.create_task(self.agent.run([{"id": "manual", "value": None, "fired_at": time.time()}] + queued))
         elif name == "check_shortcuts":
             ok, names = await asyncio.to_thread(S.focus_shortcuts_present)
             await self.send({"type": "shortcuts", "focus_ok": ok, "names": names})
@@ -672,7 +778,8 @@ class App:
         self.done = self.loop.create_future()
         self.thread = threading.Thread(target=self.vision_thread, daemon=True)
         self.thread.start()
-        tasks = [self.tick_5hz(), self.tick_1hz()]
+        tasks = [self.tick_5hz(), self.tick_1hz(), self.screen.loop(), self.agent.relearn(),
+                 self.maybe_reflect("launch", delay=90)]  # catch up on the period before a shutdown
         if self.print_mode:
             tasks.append(self.print_loop())
         if self.port and not sys.stdin.isatty():
@@ -690,6 +797,7 @@ class App:
         running = [asyncio.create_task(t) for t in tasks]
         await self.done
         self.stop.set()
+        self.screen.stop()
         for t in running:
             t.cancel()
 

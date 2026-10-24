@@ -1,6 +1,5 @@
 """Agent loop, approval gate, outcome evaluation and daily summary (SPEC §9)."""
 import asyncio
-import base64
 import datetime as dt
 import json
 import statistics
@@ -14,6 +13,7 @@ from pathlib import Path
 
 import claude_agent_sdk as sdk
 
+from . import learning
 from . import tools as T
 from .codex import Codex
 from .metrics import verdict
@@ -42,7 +42,16 @@ Rules:
 - Never diagnose. Never use medical labels (no "dry eye", no "disease", no "condition").
   The webcam cannot verify far focus; a "break" only means the user looked away >= 20 s.
 - Messages you write for the user are short, warm and natural, never nagging.
-- A tool result starting with "blocked" or "declined" means do not retry that tool this run."""
+- A tool result starting with "blocked" or "declined" means do not retry that tool this run.
+- Blinking has a healthy band around the user's baseline: too few blinks dry the eyes, but frequent_blinks (well above
+  baseline) suggests irritation or dryness already present. blink_rate is null while the user talks or is on a call.
+- blink_decline (blink rate sliding over ~10 min) and posture_drift (slumping, head dropping, leaning in vs the start of
+  the session) are fatigue signs: say gently that they may be getting tired and suggest a real break.
+- preferences include rules learned from this user's history (what helped, what they declined); follow them.
+  When the user states a lasting preference (an ask_user answer or note), save it with save_user_preference.
+- screen_activity is an on-device description of the screen (you never see pixels). Use it to pick actions: e.g. small
+  text + leaning in or squinting -> set_text_zoom; long reading -> offer summarize_aloud or switch_to_audio; a much
+  brighter screen than the room -> set_display_brightness down in small steps."""
 
 CAVEATS = ["webcam cannot verify far focus; break = looked away >=20 s",
            "camera auto-exposure makes room_luma approximate",
@@ -63,6 +72,14 @@ EXERCISES = {
                          ("Open slowly. Again: close fully, pause, open.", 0.3),
                          ("Keep blinking fully and slowly at your own pace.", 0.25)],
 }
+
+# Spoken every ~10 s during a long step so someone with closed eyes knows to keep going (and how long is left).
+KEEP_GOING = {"palming": "Keep your eyes closed and breathe slowly.", "focus_shift": "Hold your focus there.",
+              "deliberate_blink": "Keep going: close fully, pause, then open slowly."}
+DONE_TEXT = {"palming": "The exercise is done. Open your eyes slowly and blink a few times.",
+             "focus_shift": "The exercise is done. Your eyes can relax now.",
+             "deliberate_blink": "The exercise is done. You can open your eyes and carry on."}
+REMIND_AFTER_S = 10
 
 DOCTOR_TEXT = ("Over the past week your eyes have shown signs often linked to eye strain or dryness ({evidence}). "
                "eyeOS can't diagnose anything, but it might be worth mentioning to an eye doctor or optometrist.")
@@ -104,6 +121,18 @@ class Agent:
     def provider(self):
         return self.app.settings.get("agent.provider", "claude")
 
+    async def relearn(self):
+        """Refresh learned memory rules after anything that teaches us about this user."""
+        try:
+            new = learning.apply(self.db, learning.derive(self.db, suppressed=self.app.settings.get("memory.suppressed", [])))
+        except Exception:  # noqa: BLE001 - learning must never break a run
+            traceback.print_exc()
+            return
+        await self.app.send_preferences()
+        if new and not self.app.zen.active:
+            rule = next(p["rule"] for p in self.db.preferences() if p.get("key") == new[0])
+            await self.app.notice("eyeOS learned: " + rule)
+
     def available(self):
         return bool(CLIS.get(self.provider()))
 
@@ -127,17 +156,9 @@ class Agent:
             model = "claude-haiku-5-5"  # R6: fall back when Sonnet is too slow for the "instant" reaction
         try:
             ctx = await self.context(triggers)
+            # Privacy: no webcam frames or screenshots go to the cloud model. The screen is described on-device
+            # (screen_watch.py) and only that text is in the context.
             content = []
-            heartbeat_only = all(t["id"] == "heartbeat" for t in triggers)
-            if s["agent.send_images"] and not heartbeat_only:
-                cam = app.webcam_jpeg(512)
-                scr = await asyncio.to_thread(S.screenshot_jpeg, 1280)
-                for label, img in (("webcam", cam), ("screen", scr)):
-                    if img:
-                        content += [{"type": "text", "text": label},
-                                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                                                 "data": base64.b64encode(img).decode()}}]
-                        images_sent += 1
             content.append({"type": "text", "text": json.dumps(ctx, default=str)})
             db.x("UPDATE agent_runs SET context=?, images_sent=?, model=? WHERE id=?",
                  (json.dumps(ctx, default=str), images_sent, model or "codex (default)", run_id))
@@ -275,9 +296,12 @@ class Agent:
             "baseline": {"blink_rate": bl.get("blink_rate"), "blink_duration_ms": bl.get("blink_duration_ms"),
                          "ear_open": bl.get("ear_open"), "squint_score": bl.get("squint_score"),
                          "distance_cm": bl.get("distance_cm"), "calibrated": bl.get("calibrated")},
-            "active_app": active,
+            # window titles can hold email subjects / document names: they stay on the Mac
+            "active_app": {k: active.get(k) for k in ("name", "bundle_id", "category")},
             "system_state": {"dark_mode": snap.get("dark_mode"), "focus_on": self.state["focus_on"],
-                             "audio_playing": app.speaker.busy(), "increase_contrast": self.state["increase_contrast"]},
+                             "audio_playing": app.speaker.busy(), "increase_contrast": self.state["increase_contrast"],
+                             "display_brightness": await asyncio.to_thread(S.get_brightness)},
+            "screen_activity": app.screen.context(),
             "typing": app.typing(),
             "preferences": [{"id": p["id"], "rule": p["rule"], "app": p["app"]} for p in db.preferences()],
             "recent_actions": list(reversed(recent)),
@@ -352,12 +376,11 @@ class Agent:
             approved = bool(res and res.get("approved"))
             if needs_first_use and res is not None:
                 db.set_approval(name, "approved" if approved else "declined")
-                if not approved:
-                    db.add_preference(f"User declined {name} on {dt.date.today()} (context: {reason})", source="auto_decline")
                 await app.send_approvals()
             db.x("UPDATE tool_calls SET approval=? WHERE id=?", ("approved" if approved else "declined" if res else "timeout", row))
             if not approved:
                 await status("declined", "declined by user" if res else "no answer (60 s)")
+                await self.relearn()
                 return "declined by user" if res else "declined: no answer within 60 s"
             await status("approved")
 
@@ -367,6 +390,8 @@ class Agent:
         except Exception as e:  # noqa: BLE001
             ok, result = False, f"{type(e).__name__}: {e}"
         await status("done" if ok else "failed", result)
+        if name == "ask_user":
+            await self.relearn()
         if ok and meta["kind"] == "action":
             app.last_action = {"name": name, "ts": time.time()}
             if meta["target"] or name == "start_guided_eye_exercise":
@@ -448,10 +473,7 @@ class Agent:
             return True, "card shown; the camera will verify the break"
         if name == "start_guided_eye_exercise":
             steps = [{"text": t, "seconds": max(3, round(f * a["duration_s"]))} for t, f in EXERCISES[a["type"]]]
-            asyncio.create_task(app.ui_request("exercise", {"type": a["type"], "duration_s": a["duration_s"], "steps": steps},
-                                               a["duration_s"] + 30))
-            asyncio.create_task(self._narrate(steps))
-            self.pending_suggestions.append({"call_id": call_id, "tool": name, "ts": time.time()})
+            asyncio.create_task(self._exercise(a["type"], a["duration_s"], steps))
             return True, f"{a['type']} exercise started ({a['duration_s']} s)"
         if name == "play_ambient_cue":
             res = await app.tool_exec(name, a, 10)
@@ -462,15 +484,32 @@ class Agent:
             await app.speaker.stop()
             return True, "stopped"
         if name == "get_active_app":
-            return True, app.active
+            return True, {k: app.active.get(k) for k in ("name", "bundle_id", "category")}
         if name == "get_time_of_day":
             return True, _now_ctx()
-        if name == "get_screenshot":
-            img = await asyncio.to_thread(S.screenshot_jpeg, 1280)
-            if not img:
-                return False, "screenshot unavailable (Screen Recording permission?)"
-            return True, [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                                       "data": base64.b64encode(img).decode()}}]
+        if name == "describe_screen":
+            await app.screen.describe_now()
+            return True, app.screen.context()
+        if name == "set_display_brightness":
+            cur = await asyncio.to_thread(S.get_brightness)
+            if cur is None:
+                return False, "brightness control is only available on the built-in display"
+            level = max(cur - 0.3, min(cur + 0.3, a["level"]))  # code-enforced: small steps only
+            ok, r = await S.arun(S.set_brightness, level)
+            if ok:
+                await app.notice(f"Brightness {round(cur * 100)}% → {round(level * 100)}%")
+                app.refresh_screen_soon()
+            return ok, r
+        if name == "set_text_zoom":
+            ok, r = await S.arun(S.set_text_zoom, a["direction"], a.get("steps", 1))
+            if ok:
+                await app.notice({"in": "Text enlarged", "out": "Text made smaller", "reset": "Text size reset"}[a["direction"]])
+            return ok, r
+        if name == "suggest_posture_reset":
+            asyncio.create_task(app.ui_request("posture_card", {"message": a["message"], "duration_s": 12}, 30))
+            return True, "posture card shown"
+        if name == "summarize_aloud":
+            return await self._summarize_aloud(a["source"])
         if name == "ask_user":
             res = await app.ui_request("ask_user", {"question": a["question"], "options": a["options"],
                                                     "allow_free_text": a.get("allow_free_text", False)}, 60)
@@ -508,17 +547,60 @@ class Agent:
         if ok:
             self.state["focus_on"] = False
 
-    async def _narrate(self, steps):
-        if not os.environ.get("CARTESIA_API_KEY"):
-            return  # no voice without a Cartesia key; the overlay still shows the steps
-        try:
+    async def _exercise(self, kind, duration_s, steps):
+        """Run the overlay and the voice together; if the user stops early, the voice stops too."""
+        narration = asyncio.create_task(self._narrate(steps, kind))
+        res = await self.app.ui_request("exercise", {"type": kind, "duration_s": duration_s, "steps": steps}, duration_s + 30)
+        if res is not None and not res.get("completed"):
+            narration.cancel()
+            await self.app.speaker.stop()
+
+    async def _say(self, text):
+        await self.app.speaker.speak([text])
+        await self.app.speaker.task
+
+    async def _narrate(self, steps, kind=None):
+        """Speak each step; during long steps remind every ~10 s with the time left; end with a clear 'done'."""
+        try:  # Cartesia voice when a key is set, otherwise macOS `say` on-device
             for st in steps:
-                t = time.time()
-                await self.app.speaker.speak([st["text"]])
-                await self.app.speaker.task
-                await asyncio.sleep(max(0, st["seconds"] - (time.time() - t)))
+                end = time.time() + st["seconds"]
+                await self._say(st["text"])
+                while end - time.time() > REMIND_AFTER_S * 1.3:  # leave room so a reminder never runs into the next step
+                    await asyncio.sleep(REMIND_AFTER_S)
+                    left = round(end - time.time())
+                    if left >= 1:
+                        await self._say(f"{KEEP_GOING.get(kind, 'Keep going.')} {left} seconds to go.")
+                await asyncio.sleep(max(0, end - time.time()))
+            await self._say(DONE_TEXT.get(kind, "The exercise is done."))
+        except asyncio.CancelledError:
+            raise
         except Exception:  # noqa: BLE001 - narration is optional; the overlay still runs
             traceback.print_exc()
+
+    async def _summarize_aloud(self, source):
+        """Summarize the page with the LOCAL model (the text never reaches the cloud agent), then speak it."""
+        app = self.app
+        if source == "browser_tab":
+            text, err = await asyncio.to_thread(page_text, app.active.get("bundle_id"))
+        else:
+            text, err = await asyncio.to_thread(selection_text), None
+        if not text:
+            return False, err or "no text found"
+        try:
+            summary = await app.screen.ask(
+                "Summarize this for someone listening with their eyes closed. 4-6 short spoken sentences, plain words, "
+                "no lists, no URLs.\n\n" + text[:12000], json_mode=False)
+        except Exception as e:  # noqa: BLE001
+            return False, f"local model unavailable: {e}"
+        rid = app.new_request_id()
+
+        async def done():
+            await app.send({"type": "ui_dismiss", "request_id": rid})
+        await app.send({"type": "ui_request", "request_id": rid, "kind": "audio_panel",
+                        "payload": {"title": "Summary: " + (app.active.get("window_title") or "selected text"), "source": source},
+                        "timeout_s": 0})
+        await app.speaker.speak(chunks(summary), on_done=done)
+        return True, f"speaking a {len(summary.split())}-word summary (made on-device)"
 
     async def _audio(self, source):
         app = self.app
@@ -544,7 +626,7 @@ class Agent:
     async def evaluate_outcome(self, call_id, tool, metric, t_call):
         await asyncio.sleep(195)
         app = self.app
-        if tool in ("suggest_look_out_window", "start_guided_eye_exercise"):
+        if tool == "suggest_look_out_window":
             metric = "since_real_break_s"
             brk = app.engine.last_break_end
             # a real break that started within 2 min ends (and is recorded) by the time we evaluate
@@ -572,6 +654,7 @@ class Agent:
         await app.send({"type": "outcome", "action_id": oid, "call_id": call_id, "tool": tool, "metric": metric,
                         "before": None if before is None else round(before, 3),
                         "after": None if after is None else round(after, 3), "verdict": v})
+        await self.relearn()
 
     # ---------- daily summary (§9.9) ----------
 

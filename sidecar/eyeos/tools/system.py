@@ -1,8 +1,8 @@
 """Python-executed macOS tools (SPEC §9.5)."""
 import asyncio
 import datetime as dt
+import re
 import subprocess
-import tempfile
 
 import cv2
 
@@ -54,11 +54,24 @@ def dark_mode():
     return ok and out == "Dark"
 
 
-def active_app():
+def frontmost():
+    """(name, bundle_id) of the frontmost app. NSWorkspace.frontmostApplication only refreshes on a run loop, which
+    the sidecar doesn't have, so it froze on whatever was in front at launch; lsappinfo asks the system each time."""
+    ok, asn = run(["lsappinfo", "front"], 2)
+    if ok and asn:
+        ok, info = run(["lsappinfo", "info", "-only", "bundleid", "-only", "name", asn], 2)
+        if ok:
+            vals = dict(re.findall(r'"(\w+)"="([^"]*)"', info))
+            if vals.get("CFBundleIdentifier"):
+                return vals.get("LSDisplayName", ""), vals["CFBundleIdentifier"]
     from AppKit import NSWorkspace
     app = NSWorkspace.sharedWorkspace().frontmostApplication()
-    name = str(app.localizedName()) if app else ""
-    bid = str(app.bundleIdentifier()) if app and app.bundleIdentifier() else ""
+    return (str(app.localizedName()) if app else "",
+            str(app.bundleIdentifier()) if app and app.bundleIdentifier() else "")
+
+
+def active_app():
+    name, bid = frontmost()
     ok, title = osa(f'tell application "System Events" to tell (first process whose frontmost is true) to get name of front window', 3)
     title = title if ok else ""
     return {"name": name, "bundle_id": bid, "window_title": title, "category": category(bid, title)}
@@ -71,24 +84,38 @@ def time_of_day():
 
 
 def screenshot_jpeg(width=1280):
-    """Main display screenshot, resized, as JPEG bytes (or None without Screen Recording)."""
-    with tempfile.NamedTemporaryFile(suffix=".jpg") as f:
-        ok, _ = run(["screencapture", "-x", "-m", "-t", "jpg", f.name], 10)
-        img = cv2.imread(f.name) if ok else None
+    """Main display screenshot as JPEG bytes, captured straight into memory (never written to disk), or None without
+    Screen Recording permission. Returns a bytearray so the caller can wipe it (see wipe())."""
+    import Quartz
+    import numpy as np
+    img = Quartz.CGDisplayCreateImage(Quartz.CGMainDisplayID())
     if img is None:
         return None
-    h, w = img.shape[:2]
-    img = cv2.resize(img, (width, int(h * width / w)))
-    return cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 70])[1].tobytes()
+    w, h, bpr = Quartz.CGImageGetWidth(img), Quartz.CGImageGetHeight(img), Quartz.CGImageGetBytesPerRow(img)
+    data = Quartz.CGDataProviderCopyData(Quartz.CGImageGetDataProvider(img))
+    bgra = np.frombuffer(data, np.uint8)[:bpr * h].reshape(h, bpr // 4, 4)[:, :w]
+    small = cv2.resize(bgra[:, :, :3], (width, int(h * width / w)))
+    del bgra, data, img
+    jpg = bytearray(cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 70])[1].tobytes())
+    small.fill(0)
+    return jpg
+
+
+def wipe(buf):
+    """Overwrite a screenshot buffer in place once it's been used."""
+    if isinstance(buf, bytearray):
+        buf[:] = bytes(len(buf))
 
 
 def screen_luma():
-    with tempfile.NamedTemporaryFile(suffix=".jpg") as f:
-        ok, _ = run(["screencapture", "-x", "-m", "-t", "jpg", f.name], 10)
-        img = cv2.imread(f.name, cv2.IMREAD_GRAYSCALE) if ok else None
-    if img is None:
+    """Mean screen brightness 0-255 from a tiny in-memory capture (nothing written to disk)."""
+    jpg = screenshot_jpeg(64)
+    if jpg is None:
         return None
-    return round(float(cv2.resize(img, (64, 64 * img.shape[0] // img.shape[1])).mean()))
+    import numpy as np
+    img = cv2.imdecode(np.frombuffer(bytes(jpg), np.uint8), cv2.IMREAD_GRAYSCALE)
+    wipe(jpg)
+    return round(float(img.mean()))
 
 
 def seconds_since_key():
@@ -180,3 +207,54 @@ def apply_reading_mode(bundle_id):
         ok, out = osa(f'tell application "Google Chrome" to execute front window\'s active tab javascript "{READER_JS}"')
         return ok, "reader CSS applied" if ok else out + " (enable View > Developer > Allow JavaScript from Apple Events)"
     return False, "reading mode only works in Safari or Chrome"
+
+
+# ---------- display brightness (built-in display, via the private DisplayServices framework) ----------
+
+_ds = None
+
+
+def _display_services():
+    global _ds
+    if _ds is None:
+        import ctypes
+        lib = ctypes.CDLL("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices")
+        lib.DisplayServicesGetBrightness.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_float)]
+        lib.DisplayServicesSetBrightness.argtypes = [ctypes.c_uint32, ctypes.c_float]
+        _ds = lib
+    return _ds
+
+
+def get_brightness():
+    """Built-in display brightness 0-1, or None (external display / unsupported)."""
+    import ctypes
+    import Quartz
+    try:
+        v = ctypes.c_float()
+        d = Quartz.CGMainDisplayID()
+        if _display_services().DisplayServicesGetBrightness(d, ctypes.byref(v)) != 0:
+            return None
+        return round(v.value, 3)
+    except (OSError, AttributeError):
+        return None
+
+
+def set_brightness(level):
+    import Quartz
+    before = get_brightness()
+    if before is None:
+        return False, "brightness control is only available on the built-in display"
+    if _display_services().DisplayServicesSetBrightness(Quartz.CGMainDisplayID(), float(level)) != 0:
+        return False, "the display refused the brightness change"
+    return True, f"brightness {round(before * 100)}% -> {round(level * 100)}%"
+
+
+# ---------- text zoom (Cmd +/-/0 in the front app) ----------
+
+def set_text_zoom(direction, steps=1):
+    """Zooms text in the frontmost app the standard way (browsers, editors, Mail, Notes...). Needs Accessibility."""
+    key = {"in": '"="', "out": '"-"', "reset": '"0"'}[direction]
+    n = 1 if direction == "reset" else max(1, min(3, steps))
+    script = "tell application \"System Events\"\n" + f"keystroke {key} using command down\ndelay 0.1\n" * n + "end tell"
+    ok, out = osa(script, 5)
+    return (True, f"text zoom {direction} x{n}") if ok else (False, out or "keystroke failed (Accessibility permission?)")

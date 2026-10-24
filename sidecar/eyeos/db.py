@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS preferences  (id INTEGER PRIMARY KEY, ts REAL, rule T
 CREATE TABLE IF NOT EXISTS baselines    (id INTEGER PRIMARY KEY, ts REAL, data TEXT, reason TEXT);
 CREATE TABLE IF NOT EXISTS calibration  (id INTEGER PRIMARY KEY, ts REAL, step INTEGER, data TEXT);
 CREATE TABLE IF NOT EXISTS summaries    (date TEXT PRIMARY KEY, ts REAL, text TEXT, stats TEXT, seeded INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS conductor_log (ts REAL PRIMARY KEY, data TEXT);  -- text-only decisions of the on-device conductor
+CREATE TABLE IF NOT EXISTS reflections  (id INTEGER PRIMARY KEY, ts REAL, period_start REAL, period_end REAL, reason TEXT, text TEXT, data TEXT);
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_calls_run ON tool_calls(run_id);
 """
@@ -34,11 +36,14 @@ TRIGGERS = {
     "drowsy": (0.15, 0, 0.15, 0),
     "long_blinks": (3, 0, 3, 0),
     "sustained_squint": (0, 30, 0, 10),
-    "too_close": (40, 60, 40, 15),
+    "too_close": (40, 20, 40, 10),
     "eye_rub": (0, 0, 0, 0),
     "yawning": (2, 0, 1, 0),
     "dark_room_bright_screen": (0, 60, 0, 15),
     "no_break": (1200, 0, 120, 0),
+    "frequent_blinks": (25, 120, 22, 30),    # /min floor; fires above max(floor, 1.6 x baseline), not while talking
+    "blink_decline": (0.2, 0, 0.15, 0),      # fraction the blink rate fell over ~12 min (16 -> 14 -> 12 -> 10)
+    "posture_drift": (1, 60, 1, 15),         # posture issues vs the start of the session, sustained
     "break_taken": (0, 0, 0, 0),
     "heartbeat": (900, 0, 180, 0),
 }
@@ -65,7 +70,9 @@ SETTINGS = {
     "agent.heartbeat_s": (900, _num(60, 3600, int)),
     "agent.global_gap_s": (120, _num(10, 1800, int)),
     "agent.trigger_cooldown_s": (600, _num(10, 3600, int)),
-    "agent.send_images": (True, _bool),
+    "privacy.local_vision": (True, _bool),          # describe the screen with a local model; pixels never leave the Mac
+    "privacy.local_model": ("gemma4", lambda v: isinstance(v, str) and 0 < len(v) < 80),
+    "privacy.screen_interval_s": (30, _num(20, 600, int)),
     "agent.max_tool_iterations": (6, _num(1, 10, int)),
     "zen.enabled": (True, _bool),
     "zen.enter_min": (10, _num(1, 60)),
@@ -80,6 +87,7 @@ SETTINGS = {
     "audio.voice_id": ("", _str),  # empty = first voice from the Cartesia voices API
     "audio.speed": (1.0, _num(0.6, 1.5)),
     "demo.enabled": (False, _bool),
+    "memory.suppressed": ([], lambda v: isinstance(v, list) and all(_str(x) for x in v)),  # learned keys the user deleted
 }
 for _id, (thr, sus, _, _) in TRIGGERS.items():
     SETTINGS[f"triggers.{_id}.enabled"] = (True, _bool)
@@ -101,7 +109,12 @@ class DB:
         self.c.row_factory = sqlite3.Row
         self.c.execute("PRAGMA journal_mode=WAL")
         self.c.executescript(SCHEMA)
+        try:  # learned memory rules are keyed so they can be updated in place (learning.py)
+            self.c.execute("ALTER TABLE preferences ADD COLUMN key TEXT")
+        except sqlite3.OperationalError:
+            pass
         self.c.execute("DELETE FROM metrics_1hz WHERE ts < ?", (time.time() - 30 * 86400,))
+        self.c.execute("DELETE FROM conductor_log WHERE ts < ?", (time.time() - 30 * 86400,))
         self.close_interrupted()
 
     def close_interrupted(self):
@@ -148,7 +161,7 @@ class DB:
         self.x("INSERT INTO baselines (ts, data, reason) VALUES (?, ?, ?)", (time.time(), json.dumps(data), reason))
 
     def preferences(self):
-        return self.q("SELECT id, ts, rule, app, source FROM preferences ORDER BY id")
+        return self.q("SELECT id, ts, rule, app, source, key FROM preferences ORDER BY id")
 
     def add_preference(self, rule, app=None, source="agent"):
         return self.x("INSERT INTO preferences (ts, rule, app, source) VALUES (?, ?, ?, ?)", (time.time(), rule, app, source))

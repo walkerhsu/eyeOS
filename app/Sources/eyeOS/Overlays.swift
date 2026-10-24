@@ -52,6 +52,12 @@ final class Overlays {
                                               seconds: p.int("duration_s") ?? 20) { [weak self] by in
                 self?.respond(rid, ["dismissed_by": by])
             }), at: .banner)
+        case "posture_card":
+            present(rid, AnyView(LookAwayCard(message: p.str("message") ?? "Sit back and roll your shoulders.",
+                                              seconds: p.int("duration_s") ?? 12, title: "Your posture is drifting",
+                                              icon: "figure.stand") { [weak self] by in
+                self?.respond(rid, ["dismissed_by": by])
+            }), at: .banner)
         case "exercise":
             present(rid, AnyView(ExerciseView(type: p.str("type") ?? "palming", steps: p.arr("steps")) { [weak self] done, elapsed in
                 self?.respond(rid, ["completed": done, "elapsed_s": elapsed])
@@ -156,7 +162,7 @@ final class Overlays {
         let vis = NSScreen.main?.visibleFrame ?? .init(x: 0, y: 0, width: 1440, height: 900)
         let host = NSHostingView(rootView: anchor == .banner ? AnyView(view.frame(width: bannerWidth)) : view)
         // banners take their content's height (capped) so long agent text can't run off screen
-        let fit = CGSize(width: bannerWidth, height: min(host.fittingSize.height, 280))
+        let fit = CGSize(width: bannerWidth, height: min(host.fittingSize.height, 380))
         let rect = frame ?? {
             switch anchor {
             case .banner: return CGRect(x: vis.maxX + 20, y: vis.maxY - 10 - fit.height, width: fit.width, height: fit.height)
@@ -248,6 +254,23 @@ struct EdgePulse: View {
     }
 }
 
+/// The recap lines ("Rubbed your eyes 2 times", "Blinking slowed 27%"), colored by how much they matter.
+struct ZenHighlights: View {
+    let items: [J]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, h in
+                let color: Color = h.str("level") == "bad" ? .pink : h.str("level") == "warn" ? .orange : .secondary
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: h.str("icon") ?? "circle").font(.caption).foregroundStyle(color).frame(width: 16)
+                    Text(h.str("text") ?? "").font(.callout).foregroundStyle(h.str("level") == "good" ? .secondary : .primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+}
+
 /// Shown once when a Zen session ends: what happened while eyeOS stayed silent, plus an optional 20 s rest.
 struct ZenRecapCard: View {
     let payload: J
@@ -278,6 +301,11 @@ struct ZenRecapCard: View {
                     done("rested")
                 }
             } else {
+                let highlights = payload.obj("recap")?.arr("highlights") ?? []
+                if !highlights.isEmpty {
+                    Text("While you focused").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    ZenHighlights(items: Array(highlights.prefix(6)))
+                } else {
                 VStack(alignment: .leading, spacing: 3) {
                     if let br = payload.num("blink_rate") {
                         let base = payload.num("baseline_blink_rate")
@@ -286,6 +314,7 @@ struct ZenRecapCard: View {
                     if let n = payload.int("held_back"), n > 0 { Text("\(n) nudge\(n == 1 ? "" : "s") held back so you could focus") }
                 }
                 .foregroundStyle(.secondary)
+                }
                 HStack {
                     Spacer()
                     if payload.bool("suggest_rest") {
@@ -303,10 +332,12 @@ struct ZenRecapCard: View {
 struct LookAwayCard: View {
     let message: String
     let seconds: Int
+    var title = "Time for a 20-second break"
+    var icon = "window.vertical.open"
     let done: (String) -> Void
     @StateVar private var left: Double = 0
     var body: some View {
-        Card(title: "Time for a 20-second break", icon: "window.vertical.open") {
+        Card(title: title, icon: icon) {
             Text(message).lineLimit(3).foregroundStyle(.secondary)
             HStack {
                 ZStack {

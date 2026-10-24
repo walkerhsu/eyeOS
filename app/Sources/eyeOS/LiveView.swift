@@ -140,6 +140,9 @@ func topIssue(_ m: J) -> String {
     if !m.bool("calibrated") { return "Calibrate once so eyeOS knows your normal." }
     if (m.num("perclos") ?? 0) > 0.15 { return "Your eyes are closing a lot. Signs of tiredness." }
     if (m.num("blink_rate") ?? 99) < 8 { return "You're blinking much less than usual." }
+    if m.obj("blink_trend")?.bool("declining") == true { return "Your blinking has been sliding. You may be getting tired." }
+    if (m.num("blink_rate") ?? 0) > 30 { return "You're blinking a lot. Your eyes may already feel dry or irritated." }
+    if !m.arr0("posture_issues").isEmpty && (m.num("posture_off_s") ?? 0) > 60 { return "Your posture is drifting, a common sign of tiredness." }
     if (m.num("since_real_break_s") ?? 0) > 1800 { return "No real break for \(duration(m.num("since_real_break_s")))." }
     if (m.num("incomplete_pct") ?? 0) > 0.4 { return "Many blinks aren't closing fully." }
     if (m.num("current_stare_s") ?? 0) > 15 { return "Long stare. Your eyes haven't blinked in a while." }
@@ -311,10 +314,46 @@ struct TileGrid: View {
     let columns: Int
     @Binding var selected: String
 
+    /// Your band: below 60% of normal is low, above 1.6x (min 25/min) is frequent. Mirrors zen.py.
+    var band: (low: Double, high: Double) {
+        let base = min(25, max(10, store.baseline.num("blink_rate") ?? 15))
+        return (max(8, 0.6 * base), max(25, 1.6 * base))
+    }
+
+    func blinkLevel(_ br: Double?) -> Level {
+        guard let br else { return .none }
+        let (lo, hi) = band
+        if br < lo * 0.75 || br > hi * 1.25 { return .bad }
+        return br < lo || br > hi ? .warn : .good
+    }
+
+    func blinkDetail(_ m: J) -> String {
+        if m.str("app_category") == "call" { return "Paused during calls" }
+        if m.bool("talking") { return "Paused while you talk" }
+        if let tr = m.obj("blink_trend"), tr.bool("declining") {
+            return "Sliding: \(fmt(tr.num("start"), 0)) → \(fmt(tr.num("end"), 0))/min"
+        }
+        let (lo, hi) = band
+        return "Your band: \(fmt(lo, 0))–\(fmt(hi, 0))/min"
+    }
+
+    func postureValue(_ m: J) -> String {
+        guard m.bool("posture_ready") else { return "Learning" }
+        let issues = m.arr0("posture_issues")
+        return issues.isEmpty ? "Upright" : humanize(issues[0])
+    }
+
+    func postureDetail(_ m: J, onScreen: Double?) -> String {
+        guard m.bool("posture_ready") else { return "Learning how you sit (3 min)" }
+        let issues = m.arr0("posture_issues")
+        if issues.isEmpty { return "Session \(duration(m.num("session_s"))) · eyes on screen \(fmt(onScreen, 0))%" }
+        return (issues.count > 1 ? "+\(issues.count - 1) more · " : "") + "for \(duration(m.num("posture_off_s")))"
+    }
+
     static let explainers: [String: Explainer] = [
         "blink_rate": Explain.blinkRate, "incomplete_pct": Explain.incomplete, "current_stare_s": Explain.stare,
         "perclos": Explain.drowsiness, "distance_cm": Explain.distance, "squint_delta": Explain.squint,
-        "since_real_break_s": Explain.lastBreak, "gaze_on_screen": Explain.focus,
+        "since_real_break_s": Explain.lastBreak, "posture": Explain.posture,
     ]
 
     func tile(_ id: String, title: String? = nil, value: String, unit: String = "", detail: String, level: Level,
@@ -331,9 +370,8 @@ struct TileGrid: View {
         let onScreen = recent.isEmpty ? nil : Double(recent.filter { ($0.values["gaze_on_screen"] ?? 0) > 0.5 }.count) / Double(recent.count) * 100
         let nextBreak = 1200 - since
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: columns), spacing: 10) {
-            tile("blink_rate", value: fmt(br, 1), unit: "/min",
-                 detail: b.num("blink_rate").map { "Your normal: \(fmt($0, 0))/min" } ?? "Healthy: 12–20/min",
-                 level: levelHigh(br, good: 12, warn: 8))
+            tile("blink_rate", value: br == nil && m.bool("talking") ? "Talking" : fmt(br, 1), unit: br == nil ? "" : "/min",
+                 detail: blinkDetail(m), level: blinkLevel(br))
             tile("incomplete_pct", value: fmt(m.num("incomplete_pct").map { $0 * 100 }, 0), unit: "%",
                  detail: "Blinks that don't fully close", level: levelLow(m.num("incomplete_pct").map { $0 * 100 }, good: 25, warn: 40))
             tile("current_stare_s", value: fmt(m.num("current_stare_s"), 0), unit: "s",
@@ -349,9 +387,8 @@ struct TileGrid: View {
             tile("since_real_break_s", title: "Last break", value: duration(since), unit: "ago",
                  detail: nextBreak > 0 ? "20-20-20 break in \(duration(nextBreak))" : "Break overdue by \(duration(-nextBreak))",
                  level: since < 1200 ? .good : since <= 2400 ? .warn : .bad, progress: since / 1200)
-            tile("gaze_on_screen", title: store.inZen ? "Zen focus" : "Focus",
-                 value: duration(store.inZen ? store.zen.num("duration_s") : m.num("session_s")),
-                 detail: "Eyes on screen \(fmt(onScreen, 0))% (last min)", level: .none)
+            tile("posture", value: postureValue(m), detail: postureDetail(m, onScreen: onScreen),
+                 level: !m.bool("posture_ready") ? .none : (m.arr0("posture_issues").isEmpty ? .good : (m.num("posture_off_s") ?? 0) < 60 ? .warn : .bad))
         }
     }
 }
@@ -652,6 +689,18 @@ struct CameraView: View {
                 p.addLine(to: CGPoint(x: n.x + dx * L, y: n.y + dy * L))
                 ctx.stroke(p, with: .color(c), lineWidth: 2)
             }
+        }
+        // shoulders + neck from MediaPipe Pose: green when upright, orange when posture has drifted
+        if let pose = lm["pose"] as? [[Double]], pose.count >= 13, pose[11].count >= 4, min(pose[11][3], pose[12][3]) > 0.6 {
+            let off = !store.metrics.arr0("posture_issues").isEmpty
+            let color: Color = off ? .orange : .green
+            let l = pt(pose[11]), r = pt(pose[12]), nose = pt(pose[0])
+            let mid = CGPoint(x: (l.x + r.x) / 2, y: (l.y + r.y) / 2)
+            var p = Path()
+            p.move(to: l); p.addLine(to: r)
+            p.move(to: mid); p.addLine(to: nose)
+            ctx.stroke(p, with: .color(color.opacity(0.85)), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+            for c in [l, r] { ctx.fill(Path(ellipseIn: CGRect(x: c.x - 5, y: c.y - 5, width: 10, height: 10)), with: .color(color)) }
         }
         for hand in (lm["hands"] as? [[[Double]]]) ?? [] {
             for i in fingertips where i < hand.count {

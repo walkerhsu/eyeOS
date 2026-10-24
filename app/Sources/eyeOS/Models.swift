@@ -20,6 +20,7 @@ extension Dictionary where Key == String, Value == Any {
     func bool(_ k: String) -> Bool { (self[k] as? Bool) ?? false }
     func obj(_ k: String) -> J? { self[k] as? J }
     func arr(_ k: String) -> [J] { (self[k] as? [J]) ?? [] }
+    func arr0(_ k: String) -> [String] { (self[k] as? [String]) ?? [] }
 }
 
 func fmt(_ v: Double?, _ digits: Int = 0, suffix: String = "") -> String {
@@ -77,6 +78,7 @@ struct MetricDef: Identifiable, Hashable {
         .init(id: "since_real_break_s", title: "Since last break", icon: "cup.and.saucer", unit: "min", color: .green, scale: 1.0 / 60,
               limit: 20),
         .init(id: "gaze_on_screen", title: "Eyes on screen", icon: "scope", unit: "%", color: .indigo, scale: 100, domain: 0...100),
+        .init(id: "posture", title: "Posture", icon: "figure.stand", unit: "", color: .green),
     ]
     static func get(_ id: String) -> MetricDef { all.first { $0.id == id } ?? all[1] }
 }
@@ -114,4 +116,6 @@ let toolIcons: [String: String] = [
     "suggest_look_out_window": "window.vertical.open", "start_guided_eye_exercise": "figure.mind.and.body",
     "play_ambient_cue": "bell", "switch_to_audio": "speaker.wave.2.fill", "stop_audio": "speaker.slash",
     "ask_user": "questionmark.bubble", "suggest_seeing_eye_doctor": "stethoscope", "enlarge_active_window": "macwindow",
+    "set_display_brightness": "sun.max", "set_text_zoom": "textformat.size", "suggest_posture_reset": "figure.stand",
+    "summarize_aloud": "text.bubble", "describe_screen": "lock.display", "set_cursor_size": "cursorarrow.rays",
 ]

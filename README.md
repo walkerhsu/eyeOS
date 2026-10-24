@@ -2,6 +2,52 @@
 
 An eye-strain coach for macOS. See [SPEC.md](SPEC.md).
 
+## Architecture
+
+An on-device **conductor** orchestrates eyeOS. It's a local vision model that checks in every 30 s, works out what
+you're doing and how interruptible you are, controls Zen, and decides when the cloud reasoning agent may act.
+Detection runs continuously underneath it. A reflection agent turns each stretch of use into memory.
+
+```mermaid
+flowchart TB
+    cam([Webcam]) --> det
+    scr([Screen]) -->|"screenshot every 30 s,<br/>in memory, wiped after use"| cond
+
+    subgraph mac["On your Mac"]
+        det["<b>Detection</b> · every frame<br/>blinks, stare, PERCLOS, squint, distance,<br/>posture, talking, rubs, yawns, breaks"]
+        cond{{"<b>Conductor</b> · local VLM, every 30 s<br/>situation · focus · interruptibility<br/>→ Zen on/off · nudge now or wait"}}
+        act["<b>Action layer</b><br/>macOS settings, overlays, voice"]
+        mem[("<b>Memory</b><br/>learned + reflected rules")]
+        refl["<b>Reflection agent</b><br/>display off / next launch"]
+    end
+
+    subgraph cloud["Cloud (your Claude or Codex login)"]
+        llm["<b>Reasoning agent</b><br/>picks the action and words it"]
+    end
+
+    det -->|metrics| cond
+    det -->|"problem detected"| cond
+    cond -->|"good moment: wake<br/>(numbers + text only)"| llm
+    mem --> llm
+    llm -->|tool calls| act
+    act -->|"did it help?"| mem
+    refl -->|rules| mem
+    det -.->|history| refl
+```
+
+| Part | Role | Runs | Code |
+|---|---|---|---|
+| **Detection** | Signal processing, not an LLM: MediaPipe face and hand landmarks → eye and posture metrics and events. Flags problems (low or frequent blinking, leaning in, rubbing…). | on-device, every frame | `metrics.py`, `triggers.py` |
+| **Conductor** (orchestrator) | Local vision model. Every 30 s it reads one screenshot plus the metrics and its previous check, and returns the activity, situation, focus and interruptibility. Turns Zen on and off, and holds nudges during meetings and deep work (rubbing and leaning in still go out). Falls back to rules without Ollama. | on-device, Ollama | `screen_watch.py`, `zen.py` |
+| **Reasoning agent** | The cloud LLM, woken only when the conductor says it's a good moment. Picks the least disruptive action (or none) and writes the message. Every action passes a code-enforced approval check. | Claude Agent SDK or Codex CLI | `agent.py`, `codex.py` |
+| **Action layer** | Carries out the choice: brightness, dark mode, contrast, text zoom, Focus, windows; overlays (edge glow, break and posture cards, exercises, questions); voice (read aloud, or a spoken summary made by the local model). | on-device | `tools/system.py`, `Overlays.swift`, `tts.py` |
+| **Memory** | Rules sent with every run: learned from outcomes, declines and answers (what helps, what you dislike), plus what reflection writes. | on-device | `learning.py` |
+| **Reflection agent** | When the display turns off (or at the next launch, after a shutdown), reviews the unreflected stretch by hour and by situation, and writes a summary, 2–4 rules and one thing to try. | reasoning agent, numbers only | `reflection.py` |
+
+**Privacy.** Camera frames never leave the Mac. Screenshots are captured into memory, never written to disk, shown
+only to the local model, and wiped after each check. The cloud model gets numbers, the app name, the conductor's
+short text and memory rules: no images, window titles or page text. Voice uses macOS `say` unless you add a Cartesia key.
+
 ## Run
 
 ```sh
@@ -9,7 +55,7 @@ cd sidecar && uv sync && mkdir models && ./scripts/fetch_models.sh   # once
 cd ../app && ./scripts/build_app.sh && open build/eyeOS.app
 ```
 
-The app spawns the Python sidecar (`uv run … python -m eyeos`). The agent runs on the Claude Agent SDK and uses your local `claude` login (or `ANTHROPIC_API_KEY` if you set one in Settings → Keys). The Cartesia key is only needed for voice.
+The app spawns the Python sidecar (`uv run … python -m eyeos`). The reasoning agent uses your own CLI login: Claude through the Claude Agent SDK (its bundled `claude`, or `ANTHROPIC_API_KEY` from Settings → Keys), or Codex through `codex exec` (pick in Settings → Agent). The screen agent needs [Ollama](https://ollama.com) with a vision model (`ollama pull gemma4`) and Screen Recording permission for eyeOS. Without them the agent just works without a screen description. The Cartesia key is optional: without it, voice uses macOS `say`.
 
 No Xcode needed: the app is a SwiftPM package wrapped into a `.app` by `build_app.sh`.
 
@@ -37,7 +83,7 @@ pkill -f "eyeos --port 8799"
 
 ## Zen mode
 
-After `zen.enter_min` (default 10) minutes of sustained focus, eyeOS goes silent: no agent runs, overlays or sounds, and the menu bar shows a plain eye. Sustained focus means eyes on screen, active input, a work app in front and no real break. Metrics keep recording. Zen ends on a real break, being away, going idle, switching to a non-work app, or a call, and then a single recap card appears. Start or end it by hand from the Live header, the menu bar or Settings. See SPEC §9.11.
+After `zen.enter_min` (default 10) minutes of sustained focus, eyeOS goes silent: no agent runs, overlays or sounds, and the menu bar shows a plain eye. Sustained focus means eyes on screen, active input, a work app in front and no real break. Metrics keep recording. Zen ends on a real break, being away, going idle, switching to a non-work app, or a call. A recap card then lists what happened while eyeOS stayed silent: blink-rate change, eye rubs, time too close to the screen, posture drift, squinting, and every alert it held back. The same recap appears on the Log page. Start or end it by hand from the Live header, the menu bar or Settings. See SPEC §9.11.
 
 ## Sidecar only
 

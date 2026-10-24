@@ -99,6 +99,8 @@ enum Explain {
         math: """
         100 − penalties (each capped):
           blink rate below your normal  up to 30
+          blinking far above your band  up to 15
+          blink rate sliding (fatigue)  10
           incomplete blinks 20→60 %     up to 15
           drowsiness 8→20 %             up to 15
           current stare 10→30 s         up to 10
@@ -111,9 +113,15 @@ enum Explain {
 
     static let blinkRate = Explainer(
         title: "Blink rate",
-        meaning: "How many full blinks you made per minute while your face was in view. Blinking drops a lot when you concentrate on a screen, and that dries the eyes.",
-        math: "full blinks in the last 60 s ÷ minutes your face was present\n\nA blink counts when eye openness dips below 20 % of your calibrated open eye.",
-        good: "Roughly 12–20 per minute. Green ≥ 12, amber ≥ 8, red below 8.")
+        meaning: "Full blinks per minute, judged against your own normal. Too few dries the eyes (screens can cut blinking from about 17 to 4–7 a minute). Too many can mean they already feel dry or irritated. A steady slide over 10+ minutes is a fatigue sign.",
+        math: """
+        full blinks ÷ minutes your face was present and you weren't talking (last 60 s)
+        band: low < max(8, 0.6 × normal), high > max(25, 1.6 × normal)
+        normal = calibrated rate, clamped to 10–25
+        slide: per-minute rates over 12 min fall ≥ 20 % (≥ 3/min), steadily
+        """,
+        good: "Inside your band. Talking raises blinking about 50 %, so it's paused while you speak or are on a call.",
+        source: "Bentivoglio 1997 (17/min rest, 26 talking, 4.5 reading); dry-eye studies report up to twice the normal rate.")
 
     static let incomplete = Explainer(
         title: "Incomplete blinks",
@@ -151,6 +159,22 @@ enum Explain {
         math: "now − end of last break\nA break = face away or gaze off-screen for ≥ 20 s in a row. Progress = elapsed ÷ 20 min.",
         good: "Look ~6 m (20 ft) away for 20 s every 20 min. Green < 20 min, amber up to 40, red beyond.",
         source: "The webcam can't verify far focus, only that you looked away.")
+
+    static let posture = Explainer(
+        title: "Posture",
+        meaning: "How your sitting posture has drifted since the start of this session, from your shoulders (MediaPipe Pose) and head. Slumping, raised shoulders or leaning in usually creep in as you get tired.",
+        math: """
+        reference = the first 3 min of the session (calibration until then)
+        now = median over the last 30 s
+        neck = nose height above shoulders ÷ shoulder width
+        slumping: neck < 85 % of reference (head sinks)
+        shoulders raised: same, with the shoulders lifted
+        shoulders uneven: shoulder line tilts ≥ 6°
+        leaning sideways: head ≥ 15 % of shoulder width off-center
+        leaning in: shoulders ≥ 15 % wider, or closer by distance
+        head dropping / tilted: pitch ≥ 12° down / roll ≥ 10°
+        """,
+        good: "Upright, near your starting position. A reminder comes after 60 s of drift.")
 
     static let focus = Explainer(
         title: "Focus",
