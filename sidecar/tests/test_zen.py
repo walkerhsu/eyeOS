@@ -81,3 +81,27 @@ def test_eye_score():
     bad = {**base, "blink_rate": 5, "incomplete_pct": 0.6, "current_stare_s": 40, "squinting": True}
     assert eye_score(bad, {"blink_rate": 15}) < 50
     assert eye_score({**base, "face_present": False}, {}) is None
+
+
+def test_recap_stats_summarizes_the_session():
+    from eyeos.zen import recap_stats
+    rows = []
+    for i in range(600):  # 10 min: blinking slides 16 -> 10, 3 min too close, some posture drift
+        rows.append({"blink_rate": 16 - 6 * i / 600, "distance_cm": 32 if 200 <= i < 380 else 60,
+                     "posture_issues": ["slumping"] if i > 500 else [], "eye_score": 70, "current_stare_s": 8})
+    events = [{"kind": "rub", "trigger_id": None, "value": None}] * 2 + \
+             [{"kind": "trigger", "trigger_id": "too_close", "value": 32}] * 3 + \
+             [{"kind": "trigger", "trigger_id": "heartbeat", "value": None}]
+    s = recap_stats(rows, events, base_blink=15)
+    assert s["rubs"] == 2 and s["too_close_s"] == 180 and s["posture_off_s"] == 99
+    assert s["blink_change_pct"] <= -25 and s["alerts_held"] == {"too_close": 3}
+    texts = [h["text"] for h in s["highlights"]]
+    assert texts[0].startswith("Blinking slowed") and any("Rubbed your eyes 2 times" in t for t in texts)
+    assert any("Too close to the screen for 3 min" in t for t in texts)
+    assert any("3 alerts held back: too close to the screen ×3" in t for t in texts)
+
+
+def test_recap_stats_empty_session():
+    from eyeos.zen import recap_stats
+    s = recap_stats([], [], base_blink=None)
+    assert s["highlights"] == [] and s["alerts_held_total"] == 0

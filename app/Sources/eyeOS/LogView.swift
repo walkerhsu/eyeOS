@@ -220,16 +220,28 @@ private struct TimeLabel: View {
 
 struct EventCard: View {
     let e: J
+    @StateVar private var expanded = false
+
+    var highlights: [J] { e.obj("details")?.obj("recap")?.arr("highlights") ?? [] }
 
     var body: some View {
-        LogCardShell(icon: icon, color: color, title: title, subtitle: subtitle, accent: isErrorEvent(e) ? .pink : nil) {
+        LogCardShell(icon: icon, color: color, title: title, subtitle: subtitle,
+                     accent: isErrorEvent(e) ? .pink : expanded ? color : nil) {
             if let v = valueText {
                 Text(v).font(.caption.monospacedDigit().weight(.semibold))
                     .padding(.horizontal, 8).padding(.vertical, 3)
                     .background(color.opacity(0.14), in: Capsule()).foregroundStyle(color)
             }
             TimeLabel(ts: e.num("ts")).frame(width: 40, alignment: .trailing)
-        } detail: { EmptyView() }
+            if !highlights.isEmpty {
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+            }
+        } detail: {
+            if expanded { ZenHighlights(items: highlights).padding(.top, 10).padding(.leading, 46) }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { if !highlights.isEmpty { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } } }
     }
 
     var event: String { e.obj("details")?.str("event") ?? "" }
@@ -258,7 +270,13 @@ struct EventCard: View {
         case "blink_anomaly": return value.map { "Lasted \(fmt($0, 1)) s" } ?? ""
         case "zen":
             if event == "zen_start" { return d.str("source") == "manual" ? "You started Zen" : "Deep focus detected" }
-            return value.map { "\(duration($0)) of quiet focus" } ?? ""
+            var parts = [value.map { "\(duration($0)) of quiet focus" } ?? "Quiet focus"]
+            if let r = d.obj("recap") {
+                if let n = r.int("alerts_held_total"), n > 0 { parts.append("\(n) alert\(n == 1 ? "" : "s") held") }
+                if let c = r.int("blink_change_pct"), c <= -10 { parts.append("blinks \(c)%") }
+                if let n = r.int("rubs"), n > 0 { parts.append("\(n) rub\(n == 1 ? "" : "s")") }
+            }
+            return parts.joined(separator: " · ")
         default: return isErrorEvent(e) ? "Something went wrong" : "System"
         }
     }

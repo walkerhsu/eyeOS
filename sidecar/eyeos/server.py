@@ -25,7 +25,7 @@ from .screen_watch import ScreenWatch
 from .tools import system as S
 from .triggers import Triggers
 from .tts import Speaker
-from .zen import Zen, eye_score
+from .zen import Zen, eye_score, recap_stats
 
 VERSION = "0.1.0"
 EVENT_KIND = {"rub": "rub", "yawn": "yawn", "break": "break", "eyes_closed": "blink_anomaly", "blink": "blink_anomaly"}
@@ -305,17 +305,28 @@ class App:
                     fut.set_result(None)
             self.log_event("zen", None, None, {"event": "zen_start", "source": info["source"]})
         else:
+            info["recap"] = self.zen_stats(info["since"], time.time())
             self.log_event("zen", None, info["duration_s"], {"event": "zen_end", **info})
-            min_s = 60 if self.settings["demo.enabled"] else 300
+            min_s = 20 if self.settings["demo.enabled"] else 60
             if info["reason"] != "away" and info["duration_s"] >= min_s:
                 asyncio.create_task(self.zen_recap(info))
         self.today = self.today_stats()
         await self.send_status(force=True)
 
+    def zen_stats(self, since, until):
+        """Everything recorded while Zen kept eyeOS silent: metrics, events, and the alerts it held back."""
+        rows = [json.loads(r["data"]) for r in self.db.q(
+            "SELECT data FROM metrics_1hz WHERE ts >= ? AND ts <= ? AND seeded=0 ORDER BY ts", (since, until))]
+        events = self.db.q("SELECT kind, trigger_id, value FROM events WHERE ts >= ? AND ts <= ? AND seeded=0 ORDER BY ts",
+                           (since, until))
+        return recap_stats(rows, events, self.engine.cal.get("blink_rate"),
+                           self.settings["triggers.too_close.threshold"])
+
     async def zen_recap(self, info):
         base = self.engine.cal.get("blink_rate")
         br = info.get("blink_rate")
-        rest = info["duration_s"] >= 1200 or (br is not None and base and br < 0.7 * base)
+        bad = any(h["level"] == "bad" for h in info["recap"]["highlights"])
+        rest = info["duration_s"] >= 1200 or bad or (br is not None and base and br < 0.7 * base)
         res = await self.ui_request("zen_recap", {**info, "baseline_blink_rate": base, "suggest_rest": bool(rest)}, 180)
         self.log_event("system", None, None, {"event": "zen_recap", "result": res})
 
