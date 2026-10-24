@@ -127,6 +127,10 @@ def test_exercise_narration_reminds_during_long_steps_and_says_done(tmp_path, mo
 
     class Speaker:
         task = None
+        last_react = 0.0
+
+        def busy(self):
+            return False
 
         async def speak(self, texts):
             spoken.extend(texts)

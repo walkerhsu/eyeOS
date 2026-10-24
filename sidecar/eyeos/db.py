@@ -88,6 +88,10 @@ SETTINGS = {
     "advanced.real_break_s": (20, _num(5, 300, int)),
     "audio.voice_id": ("", _str),  # empty = first voice from the Cartesia voices API
     "audio.speed": (1.0, _num(0.6, 1.5)),
+    "blur.enabled": (True, _bool),                  # blink-to-unblur: staring softens the screen, a blink clears it
+    "blur.start_s": (8, _num(2, 60)),               # seconds without a blink before it starts
+    "blur.full_s": (20, _num(3, 120)),              # ...and when it reaches full strength
+    "blur.strength": (0.8, _num(0.1, 1)),
     "demo.enabled": (False, _bool),
     "memory.suppressed": ([], lambda v: isinstance(v, list) and all(_str(x) for x in v)),  # learned keys the user deleted
 }

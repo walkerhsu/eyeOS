@@ -16,6 +16,7 @@ import claude_agent_sdk as sdk
 from . import learning
 from . import tools as T
 from .codex import Codex
+from .gym import Gym
 from .metrics import verdict
 from .tools import system as S
 from .tts import page_text, selection_text, chunks
@@ -71,14 +72,19 @@ EXERCISES = {
                          ("Close your eyes fully, squeeze gently, and pause.", 0.3),
                          ("Open slowly. Again: close fully, pause, open.", 0.3),
                          ("Keep blinking fully and slowly at your own pace.", 0.25)],
+    "gaze_trace": [("Keep your head still and follow the dot with your eyes only.", 0.15),
+                   ("Follow it. Smooth and steady.", 0.45),
+                   ("Keep following. Almost there.", 0.4)],
 }
 
 # Spoken every ~10 s during a long step so someone with closed eyes knows to keep going (and how long is left).
 KEEP_GOING = {"palming": "Keep your eyes closed and breathe slowly.", "focus_shift": "Hold your focus there.",
-              "deliberate_blink": "Keep going: close fully, pause, then open slowly."}
+              "deliberate_blink": "Keep going: close fully, pause, then open slowly.",
+              "gaze_trace": "Stay with the dot."}
 DONE_TEXT = {"palming": "The exercise is done. Open your eyes slowly and blink a few times.",
              "focus_shift": "The exercise is done. Your eyes can relax now.",
-             "deliberate_blink": "The exercise is done. You can open your eyes and carry on."}
+             "deliberate_blink": "The exercise is done. You can open your eyes and carry on.",
+             "gaze_trace": "The exercise is done. Let your eyes rest for a moment."}
 REMIND_AFTER_S = 10
 
 
@@ -479,7 +485,7 @@ class Agent:
             self.pending_suggestions.append({"call_id": call_id, "tool": name, "ts": time.time()})
             return True, "card shown; the camera will verify the break"
         if name == "start_guided_eye_exercise":
-            asyncio.create_task(self._exercise(a["type"], a["duration_s"], exercise_steps(a["type"], a["duration_s"])))
+            asyncio.create_task(self._exercise(a["type"], a["duration_s"], exercise_steps(a["type"], a["duration_s"]), call_id))
             return True, f"{a['type']} exercise started ({a['duration_s']} s)"
         if name == "play_ambient_cue":
             res = await app.tool_exec(name, a, 10)
@@ -562,21 +568,37 @@ class Agent:
                            VALUES (NULL, ?, 'start_guided_eye_exercise', ?, 'done', 'user', 'user_started', ?)""",
                         (time.time(), json.dumps(args), json.dumps(f"{kind} exercise started by the user ({duration_s} s)")))
         self.app.log_event("system", None, None, {"event": "exercise", "by": "user", **args})
-        asyncio.create_task(self._exercise(kind, duration_s, exercise_steps(kind, duration_s)))
+        asyncio.create_task(self._exercise(kind, duration_s, exercise_steps(kind, duration_s), cid))
         asyncio.create_task(self.evaluate_outcome(cid, "start_guided_eye_exercise", "blink_rate", time.time()))
         return cid
 
-    async def _exercise(self, kind, duration_s, steps):
-        """Run the overlay and the voice together; if the user stops early, the voice stops too."""
+    async def _exercise(self, kind, duration_s, steps, call_id=None):
+        """Run the overlay, the voice and the camera checks together; if the user stops early, the voice stops too."""
+        app = self.app
+        gym = app.gym = Gym(kind, steps, time.time())
+        asyncio.create_task(asyncio.to_thread(app.speaker.prewarm, gym.phrases()))  # live reactions play instantly
         narration = asyncio.create_task(self._narrate(steps, kind))
-        res = await self.app.ui_request("exercise", {"type": kind, "duration_s": duration_s, "steps": steps}, duration_s + 30)
+        try:
+            res = await app.ui_request("exercise", {"type": kind, "duration_s": duration_s, "steps": steps}, duration_s + 30)
+        finally:
+            if app.gym is gym:
+                app.gym = None
         if res is not None and not res.get("completed"):
             narration.cancel()
-            await self.app.speaker.stop()
+            await app.speaker.stop()
+        result = {"type": kind, "completed": bool(res and res.get("completed")), **gym.result()}
+        app.log_event("system", None, result["score"], {"event": "exercise_result", **result})
+        if call_id:  # so the agent and the Log see how it went, not just that it started
+            self.db.x("UPDATE tool_calls SET result=? WHERE id=?",
+                      (json.dumps(f"{kind} exercise ({duration_s} s): {result['summary']}"
+                                  + ("" if result["completed"] else ", stopped early")), call_id))
 
     async def _say(self, text):
-        await self.app.speaker.speak([text])
-        await self.app.speaker.task
+        sp = self.app.speaker
+        if sp.busy():  # let a live reaction finish instead of cutting it off
+            await asyncio.wait({sp.task})
+        await sp.speak([text])
+        await sp.task
 
     async def _narrate(self, steps, kind=None):
         """Speak each step; during long steps remind every ~10 s with the time left; end with a clear 'done'."""
@@ -587,7 +609,7 @@ class Agent:
                 while end - time.time() > REMIND_AFTER_S * 1.3:  # leave room so a reminder never runs into the next step
                     await asyncio.sleep(REMIND_AFTER_S)
                     left = round(end - time.time())
-                    if left >= 1:
+                    if left >= 1 and time.time() - self.app.speaker.last_react > 8:  # live coaching already spoke
                         await self._say(f"{KEEP_GOING.get(kind, 'Keep going.')} {left} seconds to go.")
                 await asyncio.sleep(max(0, end - time.time()))
             await self._say(DONE_TEXT.get(kind, "The exercise is done."))

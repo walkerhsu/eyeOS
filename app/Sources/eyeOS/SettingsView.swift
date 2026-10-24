@@ -60,6 +60,15 @@ struct SettingsView: View {
             SettingRow("Floating HUD", detail: "A small pill over other apps; fades when all is fine, hides in Zen and meetings") {
                 Toggle("", isOn: bool("ui.show_hud")).labelsHidden().toggleStyle(.switch)
             }
+            SettingRow("Blink blur", detail: "The screen softens after \(store.settings.int("blur.start_s") ?? 8) s without a blink; "
+                       + "blinking clears it. Off in calls, video and Zen") {
+                Toggle("", isOn: bool("blur.enabled")).labelsHidden().toggleStyle(.switch)
+            }
+            if store.setting("blur.enabled") {
+                SettingRow("Blur strength") {
+                    Slider(value: number("blur.strength"), in: 0.2...1).frame(width: 180)
+                }
+            }
             SettingRow("Pause tracking", detail: "Releases the camera") {
                 Toggle("", isOn: bool("tracking.paused")).labelsHidden().toggleStyle(.switch)
             }

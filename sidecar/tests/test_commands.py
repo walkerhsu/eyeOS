@@ -59,6 +59,7 @@ def quiet_exercises(app):
     async def no_voice(steps, kind=None):
         pass
     app.agent._narrate = no_voice  # don't speak during tests
+    app.speaker.prewarm = lambda texts: None
 
 
 def test_user_exercise_runs_and_is_logged_as_the_users(tmp_path):
@@ -88,3 +89,13 @@ def test_unknown_exercise_is_rejected(tmp_path):
     run(app, ("exercise", {"type": "jumping_jacks"}))
     assert not app.ui and any(m.get("code") == "bad_exercise" for m in app.sent)
     assert app.db.q("SELECT COUNT(*) n FROM tool_calls")[0]["n"] == 0
+
+
+def test_gaze_trace_runs_and_its_result_is_logged(tmp_path):
+    app = make(tmp_path)
+    quiet_exercises(app)
+    run(app, ("exercise", {"type": "gaze_trace", "duration_s": 30}), wait=0.05)
+    assert app.ui[0][0] == "exercise" and app.ui[0][1]["type"] == "gaze_trace" and app.gym is None
+    res = [e for e in app.db.q("SELECT details FROM events WHERE kind='system'") if "exercise_result" in e["details"]]
+    assert len(res) == 1 and '"type": "gaze_trace"' in res[0]["details"]
+    assert "gaze_trace exercise (30 s)" in app.db.q("SELECT result FROM tool_calls")[0]["result"]

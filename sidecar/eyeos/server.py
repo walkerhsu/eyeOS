@@ -19,6 +19,7 @@ import cv2
 from . import demo
 from . import tools as T
 from .agent import CLIS, EXERCISES, Agent
+from .blur import StareBlur
 from .db import DB, TRIGGERS, validate_setting
 from .metrics import Engine
 from . import reflection as R
@@ -45,6 +46,8 @@ class App:
         self.engine = Engine(cal=self.db.baseline(), adv=self._adv(), today_s=self._today_s())
         self.triggers = Triggers()
         self.zen = Zen()
+        self.blur = StareBlur()
+        self.gym = None            # the camera-checked exercise running now (agent._exercise)
         self.today = {}
         self.speaker = Speaker(lambda: self.settings)
         self.agent = Agent(self)
@@ -148,9 +151,17 @@ class App:
 
     def on_events(self, events):
         """Called on the asyncio thread with events from the vision thread."""
+        if self.gym and self.gym.kind == "palming":  # palms over the eyes look like rubbing; they're not
+            events = [e for e in events if e["kind"] != "rub"]
+        if self.gym:
+            say = self.gym.feed_events(events, time.time())
+            if say:
+                asyncio.ensure_future(self.speaker.react(say))
         self.pending_events.extend(events)
         for e in events:
             k = e["kind"]
+            if k in ("blink", "incomplete"):
+                self.blur.on_dip(k)
             details = {kk: v for kk, v in e.items() if kk not in ("ts", "kind")}
             if k in ("blink", "incomplete"):
                 dip = "long_blink" if k == "blink" and e["long"] else k
@@ -184,7 +195,14 @@ class App:
                     snap["talking"] = True
                 snap["eye_score"] = eye_score(snap, self.engine.cal)
                 snap["zen"] = self.zen.active
+                snap["blur"] = self._blur(snap)
                 self.snapshot = snap
+                if self.gym:
+                    now = time.time()
+                    say = self.gym.tick(now, snap)
+                    if say:
+                        asyncio.ensure_future(self.speaker.react(say))
+                    await self.send({"type": "exercise_progress", **self.gym.progress(now)})
                 events, self.pending_events = self.pending_events, []
                 await self.send({"type": "metrics", **snap})
                 s = self.settings
@@ -195,8 +213,8 @@ class App:
                                                    t["fired_at"])
                     if self.zen.active and t["id"] not in ("heartbeat", "break_taken"):
                         self.zen.held_back += 1
-                if self.zen.active:
-                    self.triggers.pending.clear()  # Zen: keep recording, never wake the agent
+                if self.zen.active or self.gym:
+                    self.triggers.pending.clear()  # Zen or mid-exercise: keep recording, never wake the agent
                     continue
                 c = self.screen.fresh(90)
                 interruptible = not c or c.get("interruptibility") is None or c["interruptibility"] >= 0.35
@@ -210,6 +228,18 @@ class App:
                     asyncio.create_task(self.agent.run(run))
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
+
+    def _blur(self, snap):
+        """Blink-to-unblur strength for the Swift overlay, 0 whenever softening the screen would be wrong."""
+        s = self.settings
+        c = self.screen.fresh(90) or {}
+        allowed = (s["blur.enabled"] and not s["tracking.paused"] and not self.zen.active and not self.gym
+                   and snap.get("calibrated") and snap.get("face_present") and not snap.get("talking")
+                   and not self.agent.quiet()
+                   and c.get("content_type") not in ("video", "meeting", "gaming")
+                   and c.get("situation") not in ("meeting", "entertainment"))
+        start, full = (4, 10) if s["demo.enabled"] else (s["blur.start_s"], s["blur.full_s"])
+        return self.blur.update(snap.get("current_stare_s"), allowed, start, full, s["blur.strength"])
 
     async def tick_1hz(self):
         n = 0

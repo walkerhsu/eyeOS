@@ -151,7 +151,8 @@ struct Exercise: Identifiable {
     static let blink = Exercise(id: "deliberate_blink", title: "Blink exercise", icon: "eye", seconds: 30)
     static let focus = Exercise(id: "focus_shift", title: "Focus shift", icon: "arrow.left.and.right", seconds: 30)
     static let palming = Exercise(id: "palming", title: "Palming", icon: "hand.raised", seconds: 45)
-    static let all = [blink, focus, palming]
+    static let gaze = Exercise(id: "gaze_trace", title: "Follow the dot", icon: "scribble.variable", seconds: 30)
+    static let all = [blink, focus, palming, gaze]
 }
 
 func topIssue(_ m: J) -> Issue {

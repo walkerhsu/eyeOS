@@ -59,7 +59,8 @@ final class Overlays {
                 self?.respond(rid, ["dismissed_by": by])
             }), at: .banner)
         case "exercise":
-            present(rid, AnyView(ExerciseView(type: p.str("type") ?? "palming", steps: p.arr("steps")) { [weak self] done, elapsed in
+            store.exercise.p = [:]
+            present(rid, AnyView(ExerciseView(type: p.str("type") ?? "palming", steps: p.arr("steps"), progress: store.exercise) { [weak self] done, elapsed in
                 self?.respond(rid, ["completed": done, "elapsed_s": elapsed])
             }), frame: screen, level: .screenSaver, keyable: true)
         case "ask_user":
@@ -126,6 +127,59 @@ final class Overlays {
         default:
             reply(false, "unknown swift tool")
         }
+    }
+
+    // MARK: - blink-to-unblur
+
+    private var blurPanel: NSPanel?
+    private var blurLevel = 0.0
+
+    /// The sidecar's blur strength (0–1) at 5 Hz; eased so the ramp looks continuous between ticks.
+    func updateBlur(_ level: Double) { setBlur(level, duration: 0.25) }
+
+    /// A blink clears the screen at once: fully for a full blink, halfway for a half one.
+    func blinked(_ dip: String) {
+        guard blurLevel > 0.001 else { return }
+        setBlur(dip == "incomplete" ? blurLevel * 0.5 : 0, duration: 0.15)
+    }
+
+    private func setBlur(_ level: Double, duration: Double) {
+        guard level > 0.001 || blurLevel > 0.001 else { return }
+        let p = blurPanel ?? makeBlurPanel()
+        blurLevel = level
+        if level > 0.001 { p.orderFrontRegardless() }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = duration
+            p.animator().alphaValue = level
+        }, completionHandler: { [weak self] in
+            if (self?.blurLevel ?? 0) <= 0.001 { p.orderOut(nil) }
+        })
+    }
+
+    /// A click-through, screen-sized frosted pane: the system blurs whatever is behind it; its alpha sets how soft.
+    private func makeBlurPanel() -> NSPanel {
+        let frame = NSScreen.main?.frame ?? .init(x: 0, y: 0, width: 1440, height: 900)
+        let p = OverlayPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        p.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue - 1)  // exercises and calibration stay on top
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = false
+        p.ignoresMouseEvents = true
+        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        p.isReleasedWhenClosed = false
+        p.alphaValue = 0
+        let fx = NSVisualEffectView(frame: NSRect(origin: .zero, size: frame.size))
+        fx.material = .fullScreenUI
+        fx.blendingMode = .behindWindow
+        fx.state = .active
+        fx.autoresizingMask = [.width, .height]
+        let hint = NSHostingView(rootView: BlinkHint())
+        hint.frame = fx.bounds
+        hint.autoresizingMask = [.width, .height]
+        fx.addSubview(hint)
+        p.contentView = fx
+        blurPanel = p
+        return p
     }
 
     func showCalibrationDots() {
@@ -364,23 +418,51 @@ struct LookAwayCard: View {
 struct ExerciseView: View {
     let type: String
     let steps: [J]
+    @ObservedObject var progress: ExerciseProgress
     let done: (Bool, Int) -> Void
     @StateVar private var idx = 0
     @StateVar private var left = 0
     @StateVar private var elapsed = 0
     @StateVar private var phase = false
+    @StateVar private var start = Date()
+    @StateVar private var halfFlash = false
+    @StateVar private var finished = false
+
+    private var p: J { progress.p }
+
     var body: some View {
         ZStack {
             Color.black.opacity(0.85).ignoresSafeArea()
-            VStack(spacing: 36) {
-                animation.frame(width: 260, height: 260)
-                Text(steps.indices.contains(idx) ? steps[idx].str("text") ?? "" : "")
-                    .font(.title2).foregroundStyle(.white).multilineTextAlignment(.center).frame(maxWidth: 560)
-                Text("\(left)").font(.system(size: 44, weight: .light).monospacedDigit()).foregroundStyle(.white.opacity(0.7))
-                Button("Skip") { done(false, elapsed) }.buttonStyle(.bordered).tint(.white)
+            if type == "gaze_trace" && !finished { GazeDot(start: start).ignoresSafeArea() }
+            if finished {
+                VStack(spacing: 14) {
+                    Image(systemName: "checkmark.circle.fill").font(.system(size: 64)).foregroundStyle(.teal)
+                    Text("Nice work").font(.largeTitle.weight(.semibold)).foregroundStyle(.white)
+                    if let s = p.str("summary"), s != "Nice work." {
+                        Text(s).font(.title2).foregroundStyle(.white.opacity(0.75))
+                    }
+                }
+                .transition(.scale(scale: 0.9).combined(with: .opacity))
+            } else {
+                VStack(spacing: 28) {
+                    if type != "gaze_trace" { animation.frame(width: 260, height: 260) }
+                    live
+                    Text(steps.indices.contains(idx) ? steps[idx].str("text") ?? "" : "")
+                        .font(.title2).foregroundStyle(.white).multilineTextAlignment(.center).frame(maxWidth: 560)
+                    Text("\(left)").font(.system(size: 44, weight: .light).monospacedDigit()).foregroundStyle(.white.opacity(0.7))
+                    Button("Skip") { done(false, elapsed) }.buttonStyle(.bordered).tint(.white)
+                }
+                .frame(maxHeight: .infinity, alignment: type == "gaze_trace" ? .bottom : .center)
+                .padding(.bottom, type == "gaze_trace" ? 60 : 0)
             }
         }
+        .onChange(of: p.int("half") ?? 0) { _, n in
+            guard n > 0 else { return }
+            withAnimation(.easeOut(duration: 0.2)) { halfFlash = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { withAnimation { halfFlash = false } }
+        }
         .task {
+            start = Date()
             withAnimation(.easeInOut(duration: type == "focus_shift" ? 2.5 : 3).repeatForever()) { phase = true }
             for (i, s) in steps.enumerated() {
                 idx = i
@@ -391,7 +473,35 @@ struct ExerciseView: View {
                     elapsed += 1
                 }
             }
+            withAnimation(.spring(duration: 0.4)) { finished = true }  // show how it went before closing
+            try? await Task.sleep(for: .seconds(2.5))
             done(true, elapsed)
+        }
+    }
+
+    /// What the camera sees right now.
+    @ViewBuilder var live: some View {
+        switch type {
+        case "deliberate_blink":
+            Text(halfFlash ? "Half blink. Close all the way." : "Full blinks")
+                .font(.headline).foregroundStyle(halfFlash ? .orange : .white.opacity(0.6))
+        case "palming":
+            if p.bool("peeking") {
+                Label("Peeking", systemImage: "eye.fill").font(.headline).foregroundStyle(.white)
+                    .padding(.horizontal, 14).padding(.vertical, 6).background(.pink, in: Capsule())
+            } else if let pct = p.int("closed_pct") {
+                Text("Eyes closed \(pct)%").font(.headline).foregroundStyle(.white.opacity(0.6))
+            }
+        case "gaze_trace":
+            HStack(spacing: 12) {
+                ProgressRing(value: Double(p.int("accuracy") ?? 0) / 100, color: .teal) {
+                    Text(p.int("accuracy").map { "\($0)" } ?? "–").font(.title3.monospacedDigit().weight(.semibold))
+                }
+                .frame(width: 64, height: 64)
+                Text(p.bool("checking") ? "Tracking accuracy" : "Find the dot").font(.headline).foregroundStyle(.white.opacity(0.7))
+            }
+        default:
+            EmptyView()
         }
     }
 
@@ -402,11 +512,70 @@ struct ExerciseView: View {
                 Circle().fill(.teal).frame(width: phase ? 18 : 90).offset(y: phase ? -60 : 40).opacity(phase ? 0.6 : 1)
             }
         case "deliberate_blink":
-            Circle().fill(.teal.opacity(0.7)).scaleEffect(phase ? 1 : 0.35)
+            let full = p.int("full") ?? 0, target = max(1, p.int("target") ?? 10)
+            ProgressRing(value: min(1, Double(full) / Double(target)), color: halfFlash ? .orange : .teal, lineWidth: 10) {
+                VStack(spacing: 0) {
+                    Text("\(full)").font(.system(size: 84, weight: .light).monospacedDigit()).foregroundStyle(.white)
+                    Text("of \(target)").font(.title3).foregroundStyle(.white.opacity(0.5))
+                }
+            }
+            .scaleEffect(phase ? 1 : 0.96)
         default:
-            Image(systemName: "hands.and.sparkles.fill").resizable().scaledToFit().foregroundStyle(.teal)
+            Image(systemName: "hands.and.sparkles.fill").resizable().scaledToFit().foregroundStyle(p.bool("peeking") ? .pink : .teal)
                 .opacity(phase ? 1 : 0.5).scaleEffect(phase ? 1 : 0.9)
         }
+    }
+}
+
+/// A ring filled to `value` (0–1) with content in the middle.
+private struct ProgressRing<Content: View>: View {
+    let value: Double
+    let color: Color
+    var lineWidth: CGFloat = 6
+    @ViewBuilder var content: Content
+    var body: some View {
+        ZStack {
+            Circle().stroke(.white.opacity(0.15), lineWidth: lineWidth)
+            Circle().trim(from: 0, to: value).stroke(color, style: .init(lineWidth: lineWidth, lineCap: .round))
+                .rotationEffect(.degrees(-90)).animation(.easeOut(duration: 0.3), value: value)
+            content
+        }
+    }
+}
+
+/// The gaze_trace dot: a wide horizontal figure-8, the same formula the sidecar scores against (gym.dot).
+private struct GazeDot: View {
+    let start: Date
+    static let period = 6.0
+    var body: some View {
+        TimelineView(.animation) { tl in
+            Canvas { ctx, size in
+                let t = tl.date.timeIntervalSince(start)
+                func point(_ t: Double) -> CGPoint {
+                    let x = sin(2 * .pi * t / Self.period), y = 0.35 * sin(4 * .pi * t / Self.period)
+                    return CGPoint(x: size.width / 2 + x * (size.width / 2 - 120), y: size.height * 0.42 - y * (size.height / 2 - 120))
+                }
+                for k in stride(from: 12, through: 1, by: -1) {  // fading trail
+                    let c = point(t - Double(k) * 0.05), r = 14.0 - Double(k) * 0.6
+                    ctx.fill(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)),
+                             with: .color(.teal.opacity(0.25 * (1 - Double(k) / 13))))
+                }
+                let c = point(t)
+                ctx.fill(Path(ellipseIn: CGRect(x: c.x - 34, y: c.y - 34, width: 68, height: 68)), with: .color(.teal.opacity(0.18)))
+                ctx.fill(Path(ellipseIn: CGRect(x: c.x - 16, y: c.y - 16, width: 32, height: 32)), with: .color(.teal))
+            }
+        }
+    }
+}
+
+/// Centered on the blink-to-unblur pane; fades in and out with it.
+struct BlinkHint: View {
+    var body: some View {
+        Label("Blink to clear", systemImage: "eye")
+            .font(.title3.weight(.medium)).foregroundStyle(.primary.opacity(0.7))
+            .padding(.horizontal, 18).padding(.vertical, 10)
+            .background(.ultraThinMaterial, in: Capsule())
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

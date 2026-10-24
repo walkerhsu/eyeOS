@@ -621,7 +621,7 @@ Columns:
 | `set_focus_mode` | `enabled: bool, minutes?: int` | action | auto | no | py | `shortcuts run "eyeOS Focus On"` / `"… Off"`. If `minutes` is given, Python schedules the Off. | `blink_rate` |
 | `remind_to_blink` | `count: 1–5, intensity: 0–1` | action | auto | yes (subtle) | swift | `ui_request: blink_pulse`, a soft glow pulsing at screen edges, borderless click-through window on all spaces | `blink_rate` |
 | `suggest_look_out_window` | `message: str` | action | auto | yes | swift | `ui_request: look_away_card`, a small non-modal card, 20 s, natural phrasing written by the agent. Paired with `break_taken`. | `since_real_break_s` reset |
-| `start_guided_eye_exercise` | `type: palming\|focus_shift\|deliberate_blink, duration_s: 20–120` | action | ask | yes | swift + py (voice) | `ui_request: exercise` (full-screen translucent overlay with animation and countdown) + Cartesia narration of fixed scripts | `blink_rate`, `incomplete_pct` |
+| `start_guided_eye_exercise` | `type: palming\|focus_shift\|deliberate_blink\|gaze_trace, duration_s: 20–120` | action | ask | yes | swift + py (voice) | `ui_request: exercise` (full-screen translucent overlay with animation and countdown) + Cartesia narration of fixed scripts | `blink_rate`, `incomplete_pct` |
 | `play_ambient_cue` | `sound: chime\|rain\|bowl` | action | auto | yes (audio) | swift | `NSSound` from bundled resources | `blink_rate` |
 | `switch_to_audio` | `source: browser_tab\|selection` | action | ask | yes | py | see §9.8 | `gaze_on_screen_pct` drop / rest |
 | `stop_audio` | — | action | auto | no | py | kills `afplay` | — |

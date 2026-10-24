@@ -67,6 +67,7 @@ class Speaker:
         self.task = None
         self.voice = None
         self._client = None
+        self.last_react = 0.0
 
     def client(self):
         if self._client is None:
@@ -104,8 +105,27 @@ class Speaker:
             path.write_bytes(data)
         return path
 
+    def prewarm(self, texts):
+        """Blocking: synthesize into the cache ahead of time (a few in parallel), so short live lines play at once."""
+        from concurrent.futures import ThreadPoolExecutor
+        def one(t):
+            try:
+                self.synth(t)
+            except Exception:  # noqa: BLE001 - it's only a head start; speak() synthesizes on demand anyway
+                pass
+        with ThreadPoolExecutor(4) as ex:
+            list(ex.map(one, texts))
+
     def busy(self):
         return self.task is not None and not self.task.done()
+
+    async def react(self, text):
+        """A short live reaction: only between other speech, so it never cuts off an instruction (dropped otherwise)."""
+        if self.busy():
+            return False
+        self.last_react = time.time()
+        await self.speak([text])
+        return True
 
     async def speak(self, texts, on_done=None):
         """Play texts sequentially, synthesizing the next chunk while the current one plays."""

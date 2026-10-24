@@ -85,6 +85,26 @@ pkill -f "eyeos --port 8799"
 
 After `zen.enter_min` (default 10) minutes of sustained focus, eyeOS goes silent: no agent runs, overlays or sounds, and the menu bar shows a plain eye. Sustained focus means eyes on screen, active input, a work app in front and no real break. Metrics keep recording. Zen ends on a real break, being away, going idle, switching to a non-work app, or a call. A recap card then lists what happened while eyeOS stayed silent: blink-rate change, eye rubs, time too close to the screen, posture drift, squinting, and every alert it held back. The same recap appears on the Log page. Start or end it by hand from the Live header, the menu bar or Settings. See SPEC §9.11.
 
+## Blink blur
+
+Stare at the screen for 8 s without blinking and it slowly goes soft. A full blink clears it at once; a half blink
+only clears half, which teaches full blinks. It's off during Zen, calls, video, quiet apps and exercises. Toggle it and
+set the strength in Settings → Camera. Demo mode starts it at 4 s. The sidecar computes the level (`blur.py`, sent as
+`blur` in `metrics`); the app draws a click-through frosted pane (`Overlays.swift`).
+
+## Eye gym
+
+Guided exercises are checked by the camera and coached by voice as they happen (`gym.py`):
+
+- **Blinks:** counts full blinks aloud and calls out half ones.
+- **Palming:** catches peeking. Hands over the eyes or a lost face count as covered.
+- **Follow the dot:** scores how closely your eyes follow a moving dot, from the correlation between gaze and dot position, so it needs no calibration. If your head turns instead of your eyes, it tells you.
+
+Focus shift isn't checked, because a webcam can't see where your eyes focus. Spoken reactions are synthesized when the
+exercise starts (Cartesia, or `say`), so they play without delay and still work on slow Wi‑Fi. Each result
+("8 full blinks · 2 half", "Tracking accuracy 78%") is logged and becomes the tool call's result, so the agent and the
+Log page can see it.
+
 ## Sidecar only
 
 ```sh

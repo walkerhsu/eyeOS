@@ -10,6 +10,12 @@ final class LiveFeed: ObservableObject {
     @Published var dipMarks: [(ts: Double, kind: String, o: Double)] = []
 }
 
+/// Live camera checks for the running exercise (sidecar `exercise_progress`, 5 Hz): blink counts, peeking, tracking accuracy.
+@MainActor
+final class ExerciseProgress: ObservableObject {
+    @Published var p: J = [:]
+}
+
 /// One 1 Hz sample of the live metrics, for the Live timeline (last hour kept in memory).
 struct Sample {
     let ts: Double
@@ -26,6 +32,7 @@ final class Store: ObservableObject {
     lazy var overlays = Overlays(store: self)
     lazy var hud = HUD(store: self)
     let feed = LiveFeed()
+    let exercise = ExerciseProgress()
 
     @Published var connected = false
     @Published var page: Page = .live
@@ -86,6 +93,8 @@ final class Store: ObservableObject {
         case "metrics":
             metrics = m
             record(m)
+            overlays.updateBlur(m.num("blur") ?? 0)
+        case "exercise_progress": exercise.p = m
         case "landmarks":
             feed.landmarks = m
             if let ts = m.num("ts") {
@@ -95,7 +104,9 @@ final class Store: ObservableObject {
             }
         case "event":
             if m.str("kind") == "dip" {
-                feed.dipMarks.append((m.num("ts") ?? 0, m.obj("details")?.str("dip") ?? "blink", m.num("value") ?? 0))
+                let dip = m.obj("details")?.str("dip") ?? "blink"
+                feed.dipMarks.append((m.num("ts") ?? 0, dip, m.num("value") ?? 0))
+                overlays.blinked(dip)  // clear the blur now, not at the next 5 Hz tick
             } else if isToday {
                 events.insert(m, at: 0)
             }

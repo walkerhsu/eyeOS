@@ -39,10 +39,12 @@ CATALOG = {
         _obj({"message": {"type": "string", "maxLength": 200}}, ["message"]),
         "action", "auto", True, "swift", "since_real_break_s"),
     "start_guided_eye_exercise": (
-        "Start a full-screen guided eye exercise with voice narration. palming = cover eyes with warm palms (strain, "
-        "rubbing); focus_shift = near/far focusing (long near work); deliberate_blink = slow full blinks (incomplete "
-        "blinks, dryness). High disruption; use when gentler nudges failed or after eye rubbing.",
-        _obj({"type": {"type": "string", "enum": ["palming", "focus_shift", "deliberate_blink"]},
+        "Start a full-screen guided eye exercise with voice narration. The camera checks it live (counts full vs half "
+        "blinks, catches peeking, scores eye tracking) and the result comes back as the call's result. palming = cover "
+        "eyes with warm palms (strain, rubbing); focus_shift = near/far focusing (long near work); deliberate_blink = "
+        "slow full blinks (incomplete blinks, dryness); gaze_trace = follow a moving dot with the eyes (long fixed "
+        "stares). High disruption; use when gentler nudges failed or after eye rubbing.",
+        _obj({"type": {"type": "string", "enum": ["palming", "focus_shift", "deliberate_blink", "gaze_trace"]},
               "duration_s": {"type": "integer", "minimum": 20, "maximum": 120}}, ["type", "duration_s"]),
         "action", "ask", True, "swift", "blink_rate"),
     "play_ambient_cue": (
