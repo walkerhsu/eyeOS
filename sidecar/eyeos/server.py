@@ -58,6 +58,8 @@ class App:
         self.active = {"name": "", "bundle_id": "", "window_title": "", "category": "other"}
         self.typing_hist = collections.deque(maxlen=90)
         self.last_action = None
+        self.paused_until = None   # set by a timed pause
+        self.resume_timer = None
         self.frame = None          # latest unmirrored BGR frame
         self.landmarks = None
         self.camera_ok = False
@@ -496,8 +498,8 @@ class App:
 
     async def send_status(self, force=False):
         s = {"camera_ok": self.camera_ok, "face_present": self.snapshot.get("face_present"),
-             "paused": self.settings["tracking.paused"], "calibrated": self.snapshot.get("calibrated"),
-             "fps": self.snapshot.get("fps"), "agent_busy": self.agent.busy,
+             "paused": self.settings["tracking.paused"], "paused_until": self.paused_until,
+             "calibrated": self.snapshot.get("calibrated"), "fps": self.snapshot.get("fps"), "agent_busy": self.agent.busy,
              "frame_w": self.frame.shape[1] if self.frame is not None else None,
              "frame_h": self.frame.shape[0] if self.frame is not None else None, "demo_mode": self.settings["demo.enabled"],
              "agent_enabled": self.settings["agent.enabled"], "agent_available": self.agent.available(),
@@ -625,6 +627,8 @@ class App:
             return await self.send({"type": "error", "code": "bad_setting", "message": f"invalid setting {key}={value!r}"})
         self.db.set_setting(key, value)
         self.settings = self.db.settings()
+        if key == "tracking.paused":
+            self._cancel_resume()
         if key.startswith("privacy."):
             self.screen.wake.set()
         if key.startswith("advanced."):
@@ -633,10 +637,26 @@ class App:
         await self.send({"type": "settings", "settings": self.settings})
         await self.send_status(force=True)
 
+    def _cancel_resume(self):
+        if self.resume_timer:
+            self.resume_timer.cancel()
+        self.resume_timer = self.paused_until = None
+
     async def command(self, name, args):
         if name in ("pause", "resume"):
             await self.set_setting("tracking.paused", name == "pause")
-            self.log_event("system", None, None, {"event": name})
+            minutes = args.get("minutes")
+            if name == "pause" and isinstance(minutes, (int, float)) and 0 < minutes <= 24 * 60:
+                self.paused_until = time.time() + 60 * minutes
+                self.resume_timer = self.loop.call_later(
+                    60 * minutes, lambda: asyncio.ensure_future(self.command("resume", {})))
+                await self.send_status(force=True)
+            self.log_event("system", None, None, {"event": name, **({"minutes": minutes} if minutes else {})})
+        elif name == "break_now":
+            # the user asked for a break from the menu bar / HUD; the camera confirms it like any other
+            asyncio.create_task(self.ui_request("look_away_card", {"message": "Look at something 20 feet away for 20 seconds.",
+                                                                   "duration_s": 20}, 60))
+            self.log_event("system", None, None, {"event": "break_now"})
         elif name == "shutdown":
             self.stop.set()
             await self.speaker.stop()

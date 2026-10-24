@@ -24,6 +24,7 @@ final class Store: ObservableObject {
 
     let sidecar = Sidecar()
     lazy var overlays = Overlays(store: self)
+    lazy var hud = HUD(store: self)
     let feed = LiveFeed()
 
     @Published var connected = false

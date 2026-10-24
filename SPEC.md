@@ -410,7 +410,7 @@ These are sent at 15 fps **only when** setting `ui.show_camera_image == true`.
 | type | payload | rate |
 |---|---|---|
 | `hello` | `{version, calibrated, paused, settings}` | on connect |
-| `status` | `{camera_ok, face_present, paused, calibrated, fps, agent_busy, demo_mode, has_claude, zen: {active, since, source, held_back, duration_s}, today: {screen_time_s, breaks, rubs, yawns, nudges, zen_s, longest_zen_s, avg_blink_rate, avg_eye_score}}` | on change + 1 Hz (`today` recomputed every 30 s) |
+| `status` | `{camera_ok, face_present, paused, paused_until, calibrated, fps, agent_busy, demo_mode, has_claude, zen: {active, since, source, held_back, duration_s}, today: {screen_time_s, breaks, rubs, yawns, nudges, zen_s, longest_zen_s, avg_blink_rate, avg_eye_score}}` | on change + 1 Hz (`today` recomputed every 30 s) |
 | `landmarks` | `{ts, face: [[x,y],…478] \| null, hands: [[[x,y],…21],…], iris: {r:[x,y,r], l:[x,y,r]}}` | 15 fps |
 | `metrics` | snapshot (§4.13) | 5 Hz |
 | `event` | `{id, ts, kind, trigger_id, value, details}` | as they happen |
@@ -460,7 +460,7 @@ These are sent at 15 fps **only when** setting `ui.show_camera_image == true`.
 |---|---|
 | `ui_response` | `{request_id, result}` |
 | `tool_result` | `{request_id, ok, result \| error}` |
-| `command` | `{name, args?}`, where `name` is one of `pause`, `resume`, `shutdown`, `calibrate {step}`, `reset_approvals`, `seed_demo`, `wipe_demo`, `generate_summary {date?}`, `audio_control {action: pause\|resume\|stop}`, `run_agent_now` (debug), `zen {on: bool}` (start / end Zen manually) |
+| `command` | `{name, args?}`, where `name` is one of `pause {minutes?}` (with `minutes`, tracking resumes by itself; `status.paused_until` holds the deadline), `resume`, `break_now` (shows a 20 s `look_away_card` the user asked for), `shutdown`, `calibrate {step}`, `reset_approvals`, `seed_demo`, `wipe_demo`, `generate_summary {date?}`, `audio_control {action: pause\|resume\|stop}`, `run_agent_now` (debug), `zen {on: bool}` (start / end Zen manually) |
 | `set_setting` | `{key, value}` |
 | `get_settings` | `{}` |
 | `get_approvals` | `{}` |
@@ -494,6 +494,7 @@ Settings live in the SQLite `settings` table (key → JSON value), owned by Pyth
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `ui.show_camera_image` | bool | true | on = Live page shows the camera; off = score-first layout, no JPEG frames sent (§11.1) |
+| `ui.show_hud` | bool | true | ambient floating HUD over other apps (§11.4.1) |
 | `tracking.paused` | bool | false | pause also releases the camera |
 | `agent.enabled` | bool | true | off = metrics/triggers only, no LLM calls |
 | `agent.model` | str | `claude-sonnet-5-5` | fallback `claude-haiku-5-5` |
@@ -718,7 +719,7 @@ Rules:
 ```
 
 ### 9.11 Zen mode (deep focus)
-When the user is deep in focused work, eyeOS keeps measuring but becomes invisible: no agent runs, no overlays, sounds, approvals or system changes, and the menu bar shows a plain eye icon (no blink count, no colored dot).
+When the user is deep in focused work, eyeOS keeps measuring but becomes invisible: no agent runs, no overlays, sounds, approvals or system changes, the floating HUD hides, and the menu bar shows a plain eye icon (no blink count, no colored dot).
 
 **Auto entry** (`zen.enabled`, window = `zen.enter_min`, default 10 min), checked at 1 Hz once calibrated and not paused. All must hold over the window:
 - face present ≥ 85% of seconds, and gaze on screen ≥ 75% of those
@@ -822,13 +823,22 @@ See §8 for the cards. It is a plain `ScrollView`, not a grouped `Form`.
 
 ### 11.4 Menu bar extra
 - **Icon:** an eye glyph, plus the live blink rate (e.g. `👁 7`), plus a colored dot (worst card status). In Zen: the eye glyph only.
-- **Menu:**
-  - Open eyeOS
-  - Pause tracking / Resume
-  - Start Zen / End Zen (duration)
-  - Agent: On/Off
-  - Last action: <name, time> (hidden in Zen)
-  - Quit
+- **Popover** (`.window` style, 320 pt), answering "how am I doing?" from any app. It leads with the one thing to do, then the evidence:
+  1. Eye-score ring, label and the top issue sentence (same `topIssue` as the Live hero card).
+  2. Last real break, a bar toward the `no_break` threshold, and **Break now** (`command:break_now`).
+  3. A 2×2 grid: blink rate (vs. normal), distance, posture, drowsiness. Dots use the same thresholds as the icon's dot.
+  4. Eye score over the last 10 min (Zen shaded).
+  5. One line each: what the conductor sees (and whether nudges are held), the last agent action, and today's screen time / breaks / Zen.
+  6. Zen button; **Pause** for 15 min / 1 h / until resumed (shows **Resume** and the resume time when paused).
+  7. Footer: Open Dashboard, an Agent menu (enabled, provider, run now, recalibrate), Settings, Quit.
+- In Zen the popover shows only "Zen · duration · N nudges held" and the controls; while paused, only the paused line.
+
+### 11.4.1 Floating HUD
+A small always-on-top pill (`ui.show_hud`, on by default) for peripheral awareness while working in other apps. It is a non-activating `.floating` panel on all spaces, bottom-right by default (away from the banner stack), draggable, with its position remembered.
+- **Calm** (all good): colored dot + time since the last real break, at 35% opacity.
+- **Drifting** (dot amber, or a break is due): dot + the short top issue ("Blink more", "Sit back", "Too close", "Break due"), at 80%; at red, 100% with one soft pulse when it turns red. Never a repeating animation.
+- **Hover:** full opacity, the full top-issue sentence, and **Break now** / **Hide**. Click opens the dashboard.
+- **Hidden** in Zen, while paused, during meetings or entertainment (conductor), on calls, after 60 s with no face, and while the eyeOS window is in front.
 
 ### 11.5 Overlays (UI tools)
 All overlays are borderless `NSPanel`s at `.screenSaver` or `.floating` level, shown on all spaces. They don't steal focus except `ask_user`, `approval` and `exercise`.

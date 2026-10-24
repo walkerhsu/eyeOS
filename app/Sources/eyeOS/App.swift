@@ -4,7 +4,10 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.setActivationPolicy(.regular)  // needed when launched as a bare SwiftPM executable
-        MainActor.assumeIsolated { Store.shared.sidecar.start() }
+        MainActor.assumeIsolated {
+            Store.shared.sidecar.start()
+            Store.shared.hud.start()
+        }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { false }  // closes to the menu bar
     func applicationShouldHandleReopen(_ s: NSApplication, hasVisibleWindows: Bool) -> Bool {
@@ -76,7 +79,7 @@ struct EyeOSApp: App {
         .defaultSize(width: 1240, height: 800)
 
         MenuBarExtra {
-            MenuBarMenu().environmentObject(store)
+            MenuBarPanel().environmentObject(store)
         } label: {
             // Zen: a plain icon, no numbers or colors that could pull attention
             if store.inZen {
@@ -87,6 +90,7 @@ struct EyeOSApp: App {
                 Text("👁 \(br.map { String(Int($0)) } ?? "–") \(dot)")
             }
         }
+        .menuBarExtraStyle(.window)
     }
 }
 
@@ -129,54 +133,5 @@ struct RootView: View {
         .sheet(item: $store.setupRequest) { r in
             OnboardingView(recalibrating: r.recalibrate, done: { store.setupRequest = nil }).environmentObject(store)
         }
-    }
-}
-
-struct MenuBarMenu: View {
-    @EnvironmentObject var store: Store
-    @Environment(\.openWindow) private var openWindow
-
-    func show(_ page: Page? = nil) { MainWindow.show(openWindow, page: page) }
-
-    var body: some View {
-        if store.inZen {
-            Text("Zen · \(duration(store.zen.num("duration_s"))) · eyeOS is staying quiet")
-        } else if let score = store.metrics.num("eye_score") {
-            Text("Eye score \(Int(score)) · \(scoreLabel(score))")
-            Text("\(fmt(store.metrics.num("blink_rate"), 1)) blinks/min · last break \(duration(store.metrics.num("since_real_break_s"))) ago")
-        } else {
-            Text(store.connected ? scoreLabel(nil) : "Starting sidecar…")
-        }
-        Divider()
-        Button("Open Dashboard") { show() }.keyboardShortcut("0")
-        Menu("Go To") {
-            ForEach(Page.allCases) { p in
-                Button { show(p) } label: { Label(p.rawValue, systemImage: p.icon) }
-            }
-        }
-        Divider()
-        Button(store.inZen ? "End Zen (\(duration(store.zen.num("duration_s"))))" : "Enter Zen Mode") { store.setZen(!store.inZen) }
-        Button(store.setting("tracking.paused") ? "Resume Tracking" : "Pause Tracking") {
-            store.sidecar.command(store.setting("tracking.paused") ? "resume" : "pause")
-        }
-        Button("Recalibrate Camera…") {
-            show()
-            store.setupRequest = SetupRequest(recalibrate: true)
-        }
-        .disabled(!store.connected)
-        Divider()
-        Toggle("Agent Enabled", isOn: Binding(get: { store.setting("agent.enabled") }, set: { store.set("agent.enabled", $0) }))
-        Picker("Agent Provider", selection: Binding(get: { store.provider }, set: { store.set("agent.provider", $0) })) {
-            Text("Claude").tag("claude")
-            Text("Codex").tag("codex")
-        }
-        Button("Run Agent Now") { store.sidecar.command("run_agent_now") }
-            .disabled(!store.agentAvailable || store.status.bool("agent_busy") || !store.setting("agent.enabled"))
-        if let a = store.lastActed, !store.inZen {
-            Text("Last action: \(toolPhrase(a.name)) at \(clock(a.ts.timeIntervalSince1970))")
-        }
-        Divider()
-        Button("Settings…") { show(.settings) }.keyboardShortcut(",")
-        Button("Quit eyeOS") { NSApp.terminate(nil) }.keyboardShortcut("q")
     }
 }
