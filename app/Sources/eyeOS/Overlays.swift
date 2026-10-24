@@ -52,6 +52,12 @@ final class Overlays {
                                               seconds: p.int("duration_s") ?? 20) { [weak self] by in
                 self?.respond(rid, ["dismissed_by": by])
             }), at: .banner)
+        case "posture_card":
+            present(rid, AnyView(LookAwayCard(message: p.str("message") ?? "Sit back and roll your shoulders.",
+                                              seconds: p.int("duration_s") ?? 12, title: "Your posture is drifting",
+                                              icon: "figure.stand") { [weak self] by in
+                self?.respond(rid, ["dismissed_by": by])
+            }), at: .banner)
         case "exercise":
             present(rid, AnyView(ExerciseView(type: p.str("type") ?? "palming", steps: p.arr("steps")) { [weak self] done, elapsed in
                 self?.respond(rid, ["completed": done, "elapsed_s": elapsed])
@@ -303,10 +309,12 @@ struct ZenRecapCard: View {
 struct LookAwayCard: View {
     let message: String
     let seconds: Int
+    var title = "Time for a 20-second break"
+    var icon = "window.vertical.open"
     let done: (String) -> Void
     @StateVar private var left: Double = 0
     var body: some View {
-        Card(title: "Time for a 20-second break", icon: "window.vertical.open") {
+        Card(title: title, icon: icon) {
             Text(message).lineLimit(3).foregroundStyle(.secondary)
             HStack {
                 ZStack {

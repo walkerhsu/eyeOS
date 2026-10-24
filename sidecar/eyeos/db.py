@@ -39,6 +39,9 @@ TRIGGERS = {
     "yawning": (2, 0, 1, 0),
     "dark_room_bright_screen": (0, 60, 0, 15),
     "no_break": (1200, 0, 120, 0),
+    "frequent_blinks": (25, 120, 22, 30),    # /min floor; fires above max(floor, 1.6 x baseline), not while talking
+    "blink_decline": (0.2, 0, 0.15, 0),      # fraction the blink rate fell over ~12 min (16 -> 14 -> 12 -> 10)
+    "posture_drift": (1, 60, 1, 15),         # posture issues vs the start of the session, sustained
     "break_taken": (0, 0, 0, 0),
     "heartbeat": (900, 0, 180, 0),
 }
@@ -65,7 +68,9 @@ SETTINGS = {
     "agent.heartbeat_s": (900, _num(60, 3600, int)),
     "agent.global_gap_s": (120, _num(10, 1800, int)),
     "agent.trigger_cooldown_s": (600, _num(10, 3600, int)),
-    "agent.send_images": (True, _bool),
+    "privacy.local_vision": (True, _bool),          # describe the screen with a local model; pixels never leave the Mac
+    "privacy.local_model": ("gemma4", lambda v: isinstance(v, str) and 0 < len(v) < 80),
+    "privacy.screen_interval_s": (60, _num(20, 600, int)),
     "agent.max_tool_iterations": (6, _num(1, 10, int)),
     "zen.enabled": (True, _bool),
     "zen.enter_min": (10, _num(1, 60)),

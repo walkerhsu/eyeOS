@@ -180,3 +180,54 @@ def apply_reading_mode(bundle_id):
         ok, out = osa(f'tell application "Google Chrome" to execute front window\'s active tab javascript "{READER_JS}"')
         return ok, "reader CSS applied" if ok else out + " (enable View > Developer > Allow JavaScript from Apple Events)"
     return False, "reading mode only works in Safari or Chrome"
+
+
+# ---------- display brightness (built-in display, via the private DisplayServices framework) ----------
+
+_ds = None
+
+
+def _display_services():
+    global _ds
+    if _ds is None:
+        import ctypes
+        lib = ctypes.CDLL("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices")
+        lib.DisplayServicesGetBrightness.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_float)]
+        lib.DisplayServicesSetBrightness.argtypes = [ctypes.c_uint32, ctypes.c_float]
+        _ds = lib
+    return _ds
+
+
+def get_brightness():
+    """Built-in display brightness 0-1, or None (external display / unsupported)."""
+    import ctypes
+    import Quartz
+    try:
+        v = ctypes.c_float()
+        d = Quartz.CGMainDisplayID()
+        if _display_services().DisplayServicesGetBrightness(d, ctypes.byref(v)) != 0:
+            return None
+        return round(v.value, 3)
+    except (OSError, AttributeError):
+        return None
+
+
+def set_brightness(level):
+    import Quartz
+    before = get_brightness()
+    if before is None:
+        return False, "brightness control is only available on the built-in display"
+    if _display_services().DisplayServicesSetBrightness(Quartz.CGMainDisplayID(), float(level)) != 0:
+        return False, "the display refused the brightness change"
+    return True, f"brightness {round(before * 100)}% -> {round(level * 100)}%"
+
+
+# ---------- text zoom (Cmd +/-/0 in the front app) ----------
+
+def set_text_zoom(direction, steps=1):
+    """Zooms text in the frontmost app the standard way (browsers, editors, Mail, Notes...). Needs Accessibility."""
+    key = {"in": '"="', "out": '"-"', "reset": '"0"'}[direction]
+    n = 1 if direction == "reset" else max(1, min(3, steps))
+    script = "tell application \"System Events\"\n" + f"keystroke {key} using command down\ndelay 0.1\n" * n + "end tell"
+    ok, out = osa(script, 5)
+    return (True, f"text zoom {direction} x{n}") if ok else (False, out or "keystroke failed (Accessibility permission?)")

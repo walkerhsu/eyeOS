@@ -14,7 +14,9 @@ FINGERTIPS = (4, 8, 12, 16, 20)
 IRIS_MM = 11.7
 
 DEFAULT_ADV = {"dip_start_o": 0.75, "dip_end_o": 0.85, "complete_o": 0.20,
-               "incomplete_max_o": 0.60, "long_blink_s": 0.5, "real_break_s": 20}
+               "incomplete_max_o": 0.60, "long_blink_s": 0.5, "real_break_s": 20,
+               "talk_jaw_std": 0.035,     # jaw-open std over 2 s above this = speaking (talking raises blink rate ~50%)
+               "trend_window_min": 12}    # blink-rate decline window
 
 DEFAULT_CAL = {"ear_open": 0.28, "squint_score": 0.0, "w_px_cal": None, "distance_cm": 60,
                "yaw0": 0.0, "pitch0": 0.0, "roll0": 0.0,
@@ -149,9 +151,18 @@ class Engine:
         self.cal = {**DEFAULT_CAL, **(cal or {})}
         self.adv = {**DEFAULT_ADV, **(adv or {})}
         self.dip = DipDetector(self.adv)
-        self.frames = deque()        # (ts, face_present, closed) for 60 s
-        self.blinks = deque()        # (end_ts, duration, long)
-        self.incompletes = deque()   # end_ts
+        self.frames = deque()        # (ts, face_present, closed, on_screen, talking) for 60 s
+        self.blinks = deque()        # (end_ts, duration, long, talking)
+        self.incompletes = deque()   # (end_ts, talking)
+        self.jaw = deque()           # (ts, jaw_open) 2 s, for talking detection
+        self.talk_until = 0.0
+        self.trend = deque()         # (ts, blink_rate, blink_duration_s) every 10 s, ~20 min
+        self.trend_next = 0.0
+        self.posture = deque()       # (ts, pitch, roll, nose_y, distance) 30 s
+        self.posture_ref = None      # medians from the first 3 min of the session
+        self.posture_ref_samples = []
+        self.posture_session = None
+        self.posture_off_since = None
         self.stares = deque()        # (ts, gap_s) recorded at each dip start, 5 min
         self.open_samples = deque()  # (ts, squint_score, o) 10 s, open frames only
         self.luma = deque()          # (ts, luma) 5 s
@@ -243,9 +254,9 @@ class Engine:
             if ev:
                 ev["ts"] = t
                 if ev["kind"] == "blink":
-                    self.blinks.append((t, ev["duration"], ev["long"]))
+                    self.blinks.append((t, ev["duration"], ev["long"], t < self.talk_until))
                 elif ev["kind"] == "incomplete":
-                    self.incompletes.append(t)
+                    self.incompletes.append((t, t < self.talk_until))
                 if ev["kind"] in ("blink", "incomplete"):
                     self.stare_acc = 0.0
                 events.append(ev)
@@ -260,6 +271,13 @@ class Engine:
             if self.dip.state == "OPEN":
                 self.open_samples.append((t, score, o))
             sample.update(ear=e, o=o, gx=gx, gy=gy, squint_score=score, state=self.dip.state)
+
+            # talking: the jaw moves rhythmically while speaking (blendshape, else mouth aspect ratio)
+            jaw = blend.get("jawOpen")
+            self.jaw.append((t, jaw if jaw is not None else min(1.0, mar(face, w, h))))
+            _trim(self.jaw, t - 2)
+            if len(self.jaw) >= 8 and statistics.pstdev(j for _, j in self.jaw) > self.adv["talk_jaw_std"]:
+                self.talk_until = t + 1.5  # short hangover between words
 
             # distance
             wpx = iris_width_px(face, w, h)
@@ -286,6 +304,7 @@ class Engine:
                 self.yawn_start = None
 
             self.last.update(o=o, ear=e, gx=gx, gy=gy, yaw=yaw, pitch=pitch, roll=roll)
+            self._posture_sample(t, pitch, roll, face[1][1])
 
         # rubbing (§4.9): hand frames only; face dropout during near doesn't reset
         hands = f.get("hands")
@@ -316,10 +335,18 @@ class Engine:
             self.away_since = None
 
         # squint sustain
-        self.frames.append((t, present, closed, on_screen))
+        talking = present and t < self.talk_until
+        self.frames.append((t, present, closed, on_screen, talking))
         _trim(self.frames, t - 60)
         _trim(self.blinks, t - 60)
         _trim(self.incompletes, t - 60)
+        if t >= self.trend_next:
+            self.trend_next = t + 10
+            br, _, _ = self._blink_stats()
+            dur = statistics.fmean(d for _, d, _, k in self.blinks if not k) if any(not b[3] for b in self.blinks) else None
+            if br is not None:
+                self.trend.append((t, br, dur))
+            _trim(self.trend, t - 60 * (self.adv["trend_window_min"] + 3))
         _trim(self.stares, t - 300)
         _trim(self.open_samples, t - 10)
         _trim(self.yawns, t - 300)
@@ -341,12 +368,99 @@ class Engine:
         self.last["squint_delta"], self.last["open_ratio"] = delta, ratio
         return delta > 0.15 or ratio < 0.80
 
+    def _blink_stats(self):
+        """(blink_rate, incomplete_pct, quiet_min) over the last 60 s, counting only time you weren't talking."""
+        quiet = sum(1 for x in self.frames if x[1] and not x[4])
+        span = (self.frames[-1][0] - self.frames[0][0]) if len(self.frames) > 1 else 0
+        quiet_min = (quiet / len(self.frames)) * span / 60 if self.frames else 0
+        n_blink = sum(1 for b in self.blinks if not b[3])
+        n_inc = sum(1 for i in self.incompletes if not i[1])
+        rate = n_blink / quiet_min if quiet_min > 0.25 else None  # need >= 15 s of quiet face time
+        pct = n_inc / (n_blink + n_inc) if n_blink + n_inc >= 5 else None
+        return rate, pct, quiet_min
+
+    def blink_trend(self):
+        """Blink rate per minute over the trend window, and whether it is steadily declining (16 -> 14 -> 12 -> 10)."""
+        if not self.trend:
+            return None
+        t1 = self.trend[-1][0]
+        win = self.adv["trend_window_min"]
+        mins = []
+        for m in range(win, 0, -1):
+            v = [(r, d) for ts, r, d in self.trend if t1 - m * 60 < ts <= t1 - (m - 1) * 60]
+            if v:
+                ds = [d for _, d in v if d is not None]
+                mins.append((win - m, statistics.fmean(r for r, _ in v), statistics.fmean(ds) if ds else None))
+        if len(mins) < max(6, int(win * 0.6)):
+            return {"minutes": [round(r, 1) for _, r, _ in mins], "declining": False, "ready": False}
+        xs, ys = [x for x, _, _ in mins], [y for _, y, _ in mins]
+        mx, my = statistics.fmean(xs), statistics.fmean(ys)
+        slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / (sum((x - mx) ** 2 for x in xs) or 1)
+        start, end = statistics.fmean(ys[:3]), statistics.fmean(ys[-3:])
+        drop = (start - end) / start if start > 0 else 0.0
+        smooth = [statistics.fmean(ys[i:i + 3]) for i in range(len(ys) - 2)]
+        steady = sum(1 for a, b in zip(smooth, smooth[1:]) if b <= a + 0.3) / max(1, len(smooth) - 1)
+        d0 = [d for _, _, d in mins[:3] if d is not None]
+        d1 = [d for _, _, d in mins[-3:] if d is not None]
+        dur_change = (statistics.fmean(d1) / statistics.fmean(d0) - 1) if d0 and d1 and statistics.fmean(d0) > 0 else None
+        return {"minutes": [round(y, 1) for y in ys], "start": round(start, 1), "end": round(end, 1),
+                "drop_pct": round(drop, 3), "slope_per_min": round(slope, 2), "steady": round(steady, 2),
+                "blink_duration_change": None if dur_change is None else round(dur_change, 3), "ready": True,
+                "declining": drop >= 0.2 and start - end >= 3 and slope < -0.2 and steady >= 0.7}
+
+    def _posture_sample(self, t, pitch, roll, nose_y):
+        if self.posture_session != self.session_start:  # new sitting: learn a fresh reference posture
+            self.posture_session, self.posture_ref, self.posture_ref_samples = self.session_start, None, []
+            self.posture_off_since = None
+        row = (t, pitch, roll, nose_y, self.distance)
+        self.posture.append(row)
+        _trim(self.posture, t - 30)
+        if self.posture_ref is None:
+            self.posture_ref_samples.append(row)
+            if t - self.posture_ref_samples[0][0] >= 180 and len(self.posture_ref_samples) >= 100:
+                self.posture_ref = self._medians(self.posture_ref_samples)
+                self.posture_ref_samples = []
+
+    @staticmethod
+    def _medians(rows):
+        cols = list(zip(*rows))[1:]
+        return tuple(statistics.median([v for v in c if v is not None]) if any(v is not None for v in c) else None for c in cols)
+
+    def posture_state(self, t):
+        """How your sitting posture has drifted from the start of this session (slumping, head drop, tilt, leaning in)."""
+        if self.posture_ref is None or len(self.posture) < 30:
+            return {"ready": False, "issues": [], "off_s": 0}
+        pitch, roll, y, d = self._medians(self.posture)
+        rp, rr, ry, rd = self.posture_ref
+        issues = []
+        if y is not None and ry is not None and y - ry > 0.06:
+            issues.append("slumping")       # head sits lower in the frame than when you started
+        if pitch is not None and rp is not None and pitch - rp < -12:
+            issues.append("head_dropping")  # chin dropping toward the chest
+        if roll is not None and rr is not None and abs(roll - rr) > 10:
+            issues.append("head_tilted")
+        if d is not None and rd and d < 0.85 * rd:
+            issues.append("leaning_in")
+        if issues:
+            self.posture_off_since = self.posture_off_since or t
+        else:
+            self.posture_off_since = None
+        return {"ready": True, "issues": issues, "off_s": round(t - self.posture_off_since) if self.posture_off_since else 0,
+                "delta": {"pitch_deg": _r(pitch - rp if pitch is not None and rp is not None else None, 1),
+                          "roll_deg": _r(roll - rr if roll is not None and rr is not None else None, 1),
+                          "drop": _r(y - ry if y is not None and ry is not None else None, 3),
+                          "distance_ratio": _r(d / rd if d and rd else None, 2)}}
+
     def snapshot(self, now=None):
         t = now or self.last_ts or time.time()
         present_frames = sum(1 for x in self.frames if x[1])
         span = (self.frames[-1][0] - self.frames[0][0]) if len(self.frames) > 1 else 0
         present_min = (present_frames / len(self.frames)) * span / 60 if self.frames else 0
-        n_blink, n_inc = len(self.blinks), len(self.incompletes)
+        n_inc = len(self.incompletes)
+        blink_rate, incomplete_pct, _ = self._blink_stats()
+        talking = bool(self.frames and self.frames[-1][4])
+        talk_frames = sum(1 for x in self.frames if x[1] and x[4])
+        posture = self.posture_state(t)
         face_present = self.last_face_ts is not None and t - self.last_face_ts <= 0.5
         fps = (len(self.ts_hist) - 1) / (self.ts_hist[-1] - self.ts_hist[0]) if len(self.ts_hist) > 1 and self.ts_hist[-1] > self.ts_hist[0] else 0
         room = statistics.fmean(l for _, l in self.luma) if self.luma else None
@@ -355,11 +469,16 @@ class Engine:
             "ts": t,
             "face_present": face_present,
             "o": _r(L.get("o")), "ear": _r(L.get("ear"), 3),
-            "blink_rate": _r(n_blink / present_min, 1) if present_min > 0.1 else None,
+            "blink_rate": _r(blink_rate, 1),
+            "baseline_blink_rate": self.cal.get("blink_rate"),
+            "talking": talking, "talking_pct": _r(talk_frames / present_frames) if present_frames else 0,
+            "blink_trend": self.blink_trend(),
+            "posture_issues": posture["issues"], "posture_off_s": posture["off_s"], "posture_ready": posture["ready"],
+            "posture_delta": posture.get("delta"),
             "incomplete_rate": _r(n_inc / present_min, 1) if present_min > 0.1 else None,
-            "incomplete_pct": _r(n_inc / (n_blink + n_inc)) if n_blink + n_inc >= 5 else None,
-            "blink_duration_ms": round(1000 * statistics.fmean(d for _, d, _ in self.blinks)) if self.blinks else None,
-            "long_blink_count": sum(1 for b in self.blinks if b[2]),
+            "incomplete_pct": _r(incomplete_pct),
+            "blink_duration_ms": round(1000 * statistics.fmean(b[1] for b in self.blinks)) if self.blinks else None,
+            "long_blink_count": sum(1 for b in self.blinks if b[2] and not b[3]),
             "current_stare_s": _r(self.stare_acc, 1),
             "longest_stare_s": _r(max([g for _, g in self.stares] + [self.stare_acc]), 1),
             "perclos": _r(sum(1 for x in self.frames if x[1] and x[2]) / present_frames, 3) if present_frames else None,

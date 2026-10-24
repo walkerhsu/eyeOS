@@ -108,6 +108,19 @@ class Zen:
         return info
 
 
+def blink_base(cal):
+    """Your calibrated blink rate, clamped to a plausible resting range so a bad calibration can't skew everything."""
+    return min(25.0, max(10.0, cal.get("blink_rate") or 15.0))
+
+
+def blink_low(base, floor=8):
+    return max(floor, 0.6 * base)
+
+
+def blink_high(base, floor=25):
+    return max(floor, 1.6 * base)
+
+
 def eye_score(m, cal):
     """0-100 composite of the live strain signals (100 = relaxed eyes). None without a face or calibration."""
     if not m.get("face_present") or not m.get("calibrated"):
@@ -117,10 +130,13 @@ def eye_score(m, cal):
         if v is None:
             return 0.0
         return pts * min(1.0, max(0.0, (v - lo) / (hi - lo)))
-    base = cal.get("blink_rate") or 15
+    base = blink_base(cal)
     pen = 0.0
-    if m.get("blink_rate") is not None:
+    if m.get("blink_rate") is not None:  # a band around your normal: too few dries the eye, too many signals irritation
         pen += 30 * min(1.0, max(0.0, 1 - m["blink_rate"] / base))
+        pen += ramp(m["blink_rate"], blink_high(base), blink_high(base) + 10, 15)
+    if (m.get("blink_trend") or {}).get("declining"):
+        pen += 10  # blinking has been sliding for ~10 min: a fatigue sign
     pen += ramp(m.get("incomplete_pct"), 0.2, 0.6, 15)
     pen += ramp(m.get("current_stare_s"), 10, 30, 10)
     pen += ramp(m.get("perclos"), 0.08, 0.2, 15)

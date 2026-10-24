@@ -8,10 +8,12 @@ struct SettingsView: View {
     @StateVar private var cartesia = Keychain.get("cartesia") ?? ""
     @StateVar private var anthropic = Keychain.get("anthropic") ?? ""
     @StateVar private var codexModel: String?
+    @StateVar private var localModel: String?
     @StateVar private var repo = UserDefaults.standard.string(forKey: "sidecar.repo_path") ?? Sidecar.devRepo
 
     private let triggerIds = ["low_blink_rate", "long_stare", "incomplete_blinks", "drowsy", "long_blinks", "sustained_squint",
-                              "too_close", "eye_rub", "yawning", "dark_room_bright_screen", "no_break", "break_taken", "heartbeat"]
+                              "too_close", "eye_rub", "yawning", "dark_room_bright_screen", "no_break", "frequent_blinks",
+                              "blink_decline", "posture_drift", "break_taken", "heartbeat"]
 
     func bool(_ k: String) -> Binding<Bool> { Binding(get: { store.setting(k) }, set: { store.set(k, $0) }) }
     func number(_ k: String) -> Binding<Double> { Binding(get: { store.settings.num(k) ?? 0 }, set: { store.set(k, $0) }) }
@@ -27,6 +29,7 @@ struct SettingsView: View {
                 cameraCard
                 zenCard
                 agentCard
+                privacyCard
                 permissionsCard
                 keysCard
                 quietCard
@@ -125,8 +128,31 @@ struct SettingsView: View {
             SettingRow("Same signal can re-trigger after") {
                 Stepper("\(minutes("agent.trigger_cooldown_s").wrappedValue) min", value: minutes("agent.trigger_cooldown_s"), in: 1...60)
             }
-            SettingRow("Send webcam frame + screenshot", detail: "Helps the agent understand context") {
-                Toggle("", isOn: bool("agent.send_images")).labelsHidden().toggleStyle(.switch)
+        }
+    }
+
+    var privacyCard: some View {
+        let v = store.status.obj("local_vision") ?? [:]
+        return SettingsCard(title: "Privacy & on-device vision", icon: "lock.shield", color: .mint,
+                            subtitle: "No webcam frames or screenshots are ever sent to \(store.providerName). A local model on this Mac describes the screen, and only that short text reaches the agent.") {
+            SettingRow("Understand what I'm doing", detail: "A local model looks at the screen every minute") {
+                Toggle("", isOn: bool("privacy.local_vision")).labelsHidden().toggleStyle(.switch)
+            }
+            SettingRow("Local model", detail: "Any vision model pulled in Ollama (e.g. gemma4, qwen2.5vl)") {
+                TextField("gemma4", text: Binding(get: { localModel ?? store.settings.str("privacy.local_model") ?? "gemma4" },
+                                                 set: { localModel = $0 }))
+                    .textFieldStyle(.roundedBorder).frame(width: 160)
+                    .onSubmit { if let m = localModel?.trimmingCharacters(in: .whitespaces), !m.isEmpty { store.set("privacy.local_model", m) } }
+            }
+            SettingRow("Look every") {
+                Stepper("\(store.settings.int("privacy.screen_interval_s") ?? 60) s",
+                        value: Binding(get: { store.settings.int("privacy.screen_interval_s") ?? 60 },
+                                       set: { store.set("privacy.screen_interval_s", $0) }), in: 20...600, step: 10)
+            }
+            SettingRow("Status", detail: v.bool("ok") ? "Last look \(duration(v.num("age_s"))) ago: \(v.str("activity") ?? "–")"
+                                                      : (v.str("error") ?? "Waiting for the first look")) {
+                Button { store.sidecar.command("describe_screen") } label: { Label("Look now", systemImage: "eye") }
+                    .disabled(!store.setting("privacy.local_vision"))
             }
         }
     }

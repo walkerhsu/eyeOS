@@ -38,6 +38,20 @@ struct StatusPills: View {
             trackingPill
             calibrationPill
             agentPill
+            visionPill
+        }
+    }
+
+    @ViewBuilder var visionPill: some View {
+        let v = store.status.obj("local_vision") ?? [:]
+        if store.connected && v.bool("enabled") {
+            Button { store.page = .settings } label: {
+                Pill(text: v.bool("ok") ? "On-device vision" : "Vision off", icon: v.bool("ok") ? "lock.shield.fill" : "lock.slash",
+                     color: v.bool("ok") ? .mint : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(v.bool("ok") ? "A local model sees: \(v.str("activity") ?? "–"). Screenshots never leave this Mac."
+                               : (v.str("error") ?? "Starting the local model…"))
         }
     }
 
@@ -256,6 +270,9 @@ func triggerValue(_ id: String?, _ v: Double?) -> String? {
     case "incomplete_blinks", "drowsy": return fmt(v * 100, 0, suffix: " %")
     case "too_close": return fmt(v, 0, suffix: " cm")
     case "no_break": return duration(v)
+    case "frequent_blinks": return fmt(v, 1, suffix: " /min")
+    case "blink_decline": return "−" + fmt(v * 100, 0, suffix: " %")
+    case "posture_drift": return v >= 2 ? "\(Int(v)) issues" : nil
     case "sustained_squint": return v > 1 ? fmt(v, 0, suffix: " s") : nil
     default: return v == 0 || v == 1 ? nil : fmt(v, v < 1 ? 2 : 0)
     }
@@ -270,6 +287,9 @@ func toolPhrase(_ name: String) -> String {
         "set_reduce_motion": "Reduced motion", "set_focus_mode": "Changed Focus mode", "play_ambient_cue": "Played a soft cue",
         "switch_to_audio": "Read aloud for you", "stop_audio": "Stopped audio", "ask_user": "Asked you a question",
         "suggest_seeing_eye_doctor": "Suggested an eye check-up", "enlarge_active_window": "Enlarged the window",
+        "set_display_brightness": "Adjusted screen brightness", "set_text_zoom": "Changed text size",
+        "suggest_posture_reset": "Suggested a posture reset", "summarize_aloud": "Summarized the page aloud",
+        "describe_screen": "Looked at the screen (on-device)", "set_cursor_size": "Changed pointer size",
     ][name] ?? humanize(name)
 }
 

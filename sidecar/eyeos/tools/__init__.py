@@ -55,10 +55,12 @@ CATALOG = {
         _obj({"source": {"type": "string", "enum": ["browser_tab", "selection"]}}, ["source"]),
         "action", "ask", True, "py", "gaze_on_screen_pct"),
     "stop_audio": ("Stop any audio eyeOS is playing.", _obj(), "action", "auto", False, "py", None),
-    "get_active_app": ("Get the frontmost app, window title and category.", _obj(), "read", None, False, "py", None),
+    "get_active_app": ("Get the frontmost app name and category (window titles stay on the Mac).", _obj(), "read", None, False, "py", None),
     "get_time_of_day": ("Get local time, weekday and whether it is night.", _obj(), "read", None, False, "py", None),
-    "get_screenshot": ("Get a screenshot of the main display (heartbeat runs only get one this way).",
-                       _obj(), "read", None, False, "py", None),
+    "describe_screen": (
+        "Refresh the on-device description of what is on screen (activity, content type, text size, background). A local "
+        "model looks at the screen; you only get its text description, never pixels.",
+        _obj(), "read", None, False, "py", None),
     "ask_user": (
         "Ask the user a short question in a small floating panel with up to 4 short options. Times out after 60 s "
         "(returns null). Use when unsure whether something disruptive is welcome.",
@@ -94,13 +96,35 @@ CATALOG = {
     "get_calendar_events": ("Get calendar events in the next N hours (title, start, end, busy).",
                             _obj({"hours_ahead": {"type": "integer", "minimum": 1, "maximum": 12}}, ["hours_ahead"]),
                             "read", None, False, "swift", None),
+    "set_display_brightness": (
+        "Set the built-in display brightness (0.05-1.0; the current level is in system_state.display_brightness). Silent. "
+        "Lower it when the screen is much brighter than the room (dark room, light background); raise it slightly when "
+        "squinting at a dim screen in a bright room. Code limits each change to 0.3.",
+        _obj({"level": {"type": "number", "minimum": 0.05, "maximum": 1.0}}, ["level"]),
+        "action", "ask", False, "py", "squint_delta"),
+    "set_text_zoom": (
+        "Make text bigger or smaller in the front app (Cmd +/-/0: browsers, editors, Mail, Notes). Low disruption. For "
+        "small text with squinting or leaning in.",
+        _obj({"direction": {"type": "string", "enum": ["in", "out", "reset"]},
+              "steps": {"type": "integer", "minimum": 1, "maximum": 3}}, ["direction"]),
+        "action", "ask", False, "py", "distance_cm"),
+    "suggest_posture_reset": (
+        "Show a small card about posture when it has drifted (slumping, head dropping, leaning in). Write a short, warm "
+        "message; posture drifting usually means the user is getting tired, so mention a stretch or a break.",
+        _obj({"message": {"type": "string", "maxLength": 200}}, ["message"]),
+        "action", "auto", True, "swift", "distance_cm"),
+    "summarize_aloud": (
+        "Summarize the current browser tab or selected text with the on-device model and speak it, so the user can "
+        "rest their eyes instead of reading. The text never leaves the Mac for the summary. Medium disruption; ask first.",
+        _obj({"source": {"type": "string", "enum": ["browser_tab", "selection"]}}, ["source"]),
+        "action", "ask", True, "py", "gaze_on_screen_pct"),
     "suggest_seeing_eye_doctor": (
         "Show a calm card suggesting the user mention a week of eye-strain signs to an eye doctor. Only works when the "
         "code-enforced eligibility rule is met. Never diagnose.",
         _obj({"evidence": {"type": "string", "maxLength": 300}}, ["evidence"]), "action", "ask", True, "swift", None),
 }
 
-FIRST_USE_READS = {"get_calendar_events", "get_screenshot"}
+FIRST_USE_READS = {"get_calendar_events"}
 SILENT = {n for n, v in CATALOG.items() if not v[4]}
 
 

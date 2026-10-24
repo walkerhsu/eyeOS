@@ -173,6 +173,7 @@ final class Store: ObservableObject {
         for k in MetricDef.all.map(\.id) where k != "openness" {
             if let x = m.num(k) { v[k] = x } else if let b = m[k] as? Bool { v[k] = b ? 1 : 0 }
         }
+        if m.bool("posture_ready") { v["posture"] = Double(m.arr0("posture_issues").count) }  // number of posture issues
         series.append(Sample(ts: ts, values: v, zen: m.bool("zen")))
         if series.count > 3700 { series.removeFirst(series.count - 3600) }
     }

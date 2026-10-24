@@ -83,8 +83,16 @@ class Speaker:
         return self.voice
 
     def synth(self, text):
-        """Blocking: returns a cached WAV path."""
+        """Blocking: returns a cached audio path. Without a Cartesia key it uses macOS `say`, fully on-device."""
         s = self.settings_fn()
+        if not os.environ.get("CARTESIA_API_KEY"):
+            CACHE.mkdir(parents=True, exist_ok=True)
+            path = CACHE / (hashlib.sha1(f"say|{s['audio.speed']}|{text}".encode()).hexdigest() + ".aiff")
+            if not path.exists():
+                ok, err = run(["say", "-r", str(int(180 * s["audio.speed"])), "-o", str(path), text], timeout=60)
+                if not ok:
+                    raise RuntimeError(f"say failed: {err}")
+            return path
         voice = self._voice()
         CACHE.mkdir(parents=True, exist_ok=True)
         path = CACHE / (hashlib.sha1(f"{voice}|{s['audio.speed']}|{text}".encode()).hexdigest() + ".wav")

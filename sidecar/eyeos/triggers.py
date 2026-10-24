@@ -1,5 +1,6 @@
 """Deterministic trigger engine + rate-limited queue (SPEC §5)."""
 from .db import TRIGGERS
+from .zen import blink_base, blink_high, blink_low
 
 
 class Triggers:
@@ -47,8 +48,16 @@ class Triggers:
 
     def _cond(self, tid, m, kinds, thr, now):
         g = m.get
-        if tid == "low_blink_rate":
-            return g("blink_rate") is not None and m["blink_rate"] < thr, g("blink_rate")
+        base = blink_base({"blink_rate": g("baseline_blink_rate")})
+        if tid == "low_blink_rate":  # relative to your normal; blink_rate is None while talking or on a call
+            return g("blink_rate") is not None and m["blink_rate"] < blink_low(base, thr), g("blink_rate")
+        if tid == "frequent_blinks":
+            return g("blink_rate") is not None and m["blink_rate"] > blink_high(base, thr), g("blink_rate")
+        if tid == "blink_decline":
+            tr = g("blink_trend") or {}
+            return bool(tr.get("declining")) and (tr.get("drop_pct") or 0) >= thr, tr.get("drop_pct")
+        if tid == "posture_drift":
+            return len(g("posture_issues") or []) >= thr, len(g("posture_issues") or [])
         if tid == "long_stare":
             return (g("current_stare_s") or 0) > thr, g("current_stare_s")
         if tid == "incomplete_blinks":

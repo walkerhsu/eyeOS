@@ -21,6 +21,7 @@ from . import tools as T
 from .agent import CLIS, Agent
 from .db import DB, TRIGGERS, validate_setting
 from .metrics import Engine
+from .screen_watch import ScreenWatch
 from .tools import system as S
 from .triggers import Triggers
 from .tts import Speaker
@@ -46,6 +47,7 @@ class App:
         self.today = {}
         self.speaker = Speaker(lambda: self.settings)
         self.agent = Agent(self)
+        self.screen = ScreenWatch(lambda: self.settings, lambda: bool(self.snapshot.get("face_present")))
         self.ws = None
         self.loop = None
         self.futures = {}
@@ -172,6 +174,9 @@ class App:
                 with self.lock:
                     snap = self.engine.snapshot(time.time())
                 snap["app_category"] = self.active.get("category")
+                if snap["app_category"] == "call":  # talking on calls raises blinking ~50%: don't judge blinks then
+                    snap["blink_rate"] = snap["incomplete_pct"] = None
+                    snap["talking"] = True
                 snap["eye_score"] = eye_score(snap, self.engine.cal)
                 snap["zen"] = self.zen.active
                 self.snapshot = snap
@@ -412,7 +417,7 @@ class App:
              "agent_enabled": self.settings["agent.enabled"], "agent_available": self.agent.available(),
              "agent_provider": self.agent.provider(), "agent_clis": CLIS,
              "has_tts_key": bool(os.environ.get("CARTESIA_API_KEY")), "active_app": self.active, "last_action": self.last_action,
-             "zen": self.zen.state(time.time()), "today": self.today}
+             "zen": self.zen.state(time.time()), "today": self.today, "local_vision": self.screen.state()}
         key = json.dumps(s, sort_keys=True, default=str)
         if force or key != self.last_status:
             self.last_status = key
@@ -531,6 +536,8 @@ class App:
             return await self.send({"type": "error", "code": "bad_setting", "message": f"invalid setting {key}={value!r}"})
         self.db.set_setting(key, value)
         self.settings = self.db.settings()
+        if key.startswith("privacy."):
+            self.screen.wake.set()
         if key.startswith("advanced."):
             with self.lock:
                 self.engine.adv.update(self._adv())
@@ -572,6 +579,11 @@ class App:
             change = self.zen.set_manual(bool(args.get("on")), time.time())
             if change:
                 await self.zen_changed(*change)
+        elif name == "describe_screen":
+            async def go():
+                await self.screen.describe_now()
+                await self.send_status(force=True)
+            asyncio.create_task(go())
         elif name == "run_agent_now":
             if not self.agent.available():
                 await self.send({"type": "error", "code": "agent_unavailable",
@@ -672,7 +684,7 @@ class App:
         self.done = self.loop.create_future()
         self.thread = threading.Thread(target=self.vision_thread, daemon=True)
         self.thread.start()
-        tasks = [self.tick_5hz(), self.tick_1hz()]
+        tasks = [self.tick_5hz(), self.tick_1hz(), self.screen.loop()]
         if self.print_mode:
             tasks.append(self.print_loop())
         if self.port and not sys.stdin.isatty():
@@ -690,6 +702,7 @@ class App:
         running = [asyncio.create_task(t) for t in tasks]
         await self.done
         self.stop.set()
+        self.screen.stop()
         for t in running:
             t.cancel()
 
