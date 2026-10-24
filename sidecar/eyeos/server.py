@@ -50,7 +50,7 @@ class App:
         self.today = {}
         self.speaker = Speaker(lambda: self.settings)
         self.agent = Agent(self)
-        self.screen = ScreenWatch(lambda: self.settings, lambda: bool(self.snapshot.get("face_present")),
+        self.screen = ScreenWatch(lambda: self.settings, lambda: bool(self.snapshot.get("face_present")) and not self.calibrating,
                                   self.conductor_metrics, self.on_conductor)
         self.ws = None
         self.loop = None
@@ -66,6 +66,7 @@ class App:
         self.stop = threading.Event()
         self.last_status = None
         self.pending_events = []
+        self.cal_hold_until = 0.0  # recalibrating: detection results, triggers, zen and the agent stand down
         self.done = None
         self.thread = None
 
@@ -148,6 +149,8 @@ class App:
 
     def on_events(self, events):
         """Called on the asyncio thread with events from the vision thread."""
+        if self.calibrating:
+            return
         self.pending_events.extend(events)
         for e in events:
             k = e["kind"]
@@ -189,12 +192,16 @@ class App:
                 await self.send({"type": "metrics", **snap})
                 s = self.settings
                 last_face = self.engine.last_face_ts or 0
-                active = (not s["tracking.paused"] and snap["calibrated"] and time.time() - last_face < 120)
+                active = (not s["tracking.paused"] and snap["calibrated"] and time.time() - last_face < 120
+                          and not self.calibrating)
                 for t in self.triggers.evaluate(snap, events, s, time.time(), active):
                     t["event_id"] = self.log_event("trigger", t["id"], t["value"], {"demo": s["demo.enabled"], "zen": self.zen.active},
                                                    t["fired_at"])
                     if self.zen.active and t["id"] not in ("heartbeat", "break_taken"):
                         self.zen.held_back += 1
+                if self.calibrating:
+                    self.triggers.pending.clear()  # recalibrating: nothing fires, nothing wakes the agent
+                    continue
                 if self.zen.active:
                     self.triggers.pending.clear()  # Zen: keep recording, never wake the agent
                     continue
@@ -218,7 +225,7 @@ class App:
             n += 1
             snap = dict(self.snapshot)
             self.history.append(snap)
-            if snap.get("face_present"):
+            if snap.get("face_present") and not self.calibrating:
                 self.db.x("INSERT OR REPLACE INTO metrics_1hz (ts, data, app_category) VALUES (?, ?, ?)",
                           (snap["ts"], json.dumps(snap), snap.get("app_category")))
             try:
@@ -226,7 +233,7 @@ class App:
                 input_age = S.seconds_since_input()
             except Exception:  # noqa: BLE001 - Quartz unavailable
                 input_age = None
-            if snap.get("calibrated") and not self.settings["tracking.paused"]:
+            if snap.get("calibrated") and not self.settings["tracking.paused"] and not self.calibrating:
                 change = self.zen.tick(time.time(), snap, input_age, self.active.get("category"),
                                        self.settings["zen.enter_min"] * 60, self.settings["zen.enabled"],
                                        self.screen.recent(5) if self.settings["privacy.local_vision"] else None)
@@ -421,6 +428,10 @@ class App:
                 "avg_eye_score": round(avg["e"]) if avg["e"] is not None else None}
 
     # ---------- calibration (§7) ----------
+
+    @property
+    def calibrating(self):
+        return time.time() < self.cal_hold_until
 
     async def calibrate(self, step, args):
         if step not in CAL_SECONDS:
@@ -679,7 +690,11 @@ class App:
             self.stop.set()
             await self.speaker.stop()
             self.loop.call_later(0.3, self._finish)
+        elif name == "calibration_end":
+            self.cal_hold_until = 0.0
         elif name == "calibrate":
+            if int(args.get("step", 0)) in (1, 2):  # the setup sheet: hold from its first Start until it closes
+                self.cal_hold_until = time.time() + 180  # safety net if the app never says calibration_end
             asyncio.create_task(self.calibrate(int(args.get("step", 0)), args))
         elif name == "reset_approvals":
             self.db.x("DELETE FROM approvals")

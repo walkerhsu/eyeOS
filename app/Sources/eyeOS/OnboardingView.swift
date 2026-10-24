@@ -46,6 +46,7 @@ struct OnboardingView: View {
     }
 
     func cancel() {
+        store.sidecar.command("calibration_end")
         store.overlays.hideCalibrationDots()
         store.calibration = nil
         if !recalibrating { UserDefaults.standard.set(true, forKey: "onboarded") }
@@ -153,6 +154,7 @@ struct OnboardingView: View {
             .font(.callout).foregroundStyle(.secondary).frame(maxWidth: 400, alignment: .leading)
             Spacer()
             Button {
+                store.sidecar.command("calibration_end")
                 store.sidecar.command("calibrate", ["step": 3])  // 60 s baseline, in the background
                 UserDefaults.standard.set(true, forKey: "onboarded")
                 done()
