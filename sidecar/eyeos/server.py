@@ -32,6 +32,8 @@ from .zen import Zen, eye_score, recap_stats
 VERSION = "0.1.0"
 EVENT_KIND = {"rub": "rub", "yawn": "yawn", "break": "break", "eyes_closed": "blink_anomaly", "blink": "blink_anomaly"}
 CAL_SECONDS = {1: 3, 2: 10, 3: 60}
+GAZE_DOTS = ["center", "top_left", "top_right", "bottom_right", "bottom_left"]
+MIN_CAL_BLINKS = 3    # in the 60 s baseline; fewer is unusual enough that blinks were probably missed
 HISTORY_KEYS = ("blink_rate", "perclos", "distance_cm", "squint_delta", "incomplete_pct", "eye_score", "current_stare_s",
                 "longest_stare_s", "gaze_on_screen", "blink_duration_ms", "since_real_break_s", "zen")
 
@@ -51,7 +53,7 @@ class App:
         self.today = {}
         self.speaker = Speaker(lambda: self.settings)
         self.agent = Agent(self)
-        self.screen = ScreenWatch(lambda: self.settings, lambda: bool(self.snapshot.get("face_present")),
+        self.screen = ScreenWatch(lambda: self.settings, lambda: bool(self.snapshot.get("face_present")) and not self.calibrating,
                                   self.conductor_metrics, self.on_conductor)
         self.ws = None
         self.loop = None
@@ -69,6 +71,7 @@ class App:
         self.stop = threading.Event()
         self.last_status = None
         self.pending_events = []
+        self.cal_hold_until = 0.0  # recalibrating: detection results, triggers, zen and the agent stand down
         self.done = None
         self.thread = None
 
@@ -151,6 +154,8 @@ class App:
 
     def on_events(self, events):
         """Called on the asyncio thread with events from the vision thread."""
+        if self.calibrating:
+            return
         if self.gym and self.gym.kind == "palming":  # palms over the eyes look like rubbing; they're not
             events = [e for e in events if e["kind"] != "rub"]
         if self.gym:
@@ -207,12 +212,16 @@ class App:
                 await self.send({"type": "metrics", **snap})
                 s = self.settings
                 last_face = self.engine.last_face_ts or 0
-                active = (not s["tracking.paused"] and snap["calibrated"] and time.time() - last_face < 120)
+                active = (not s["tracking.paused"] and snap["calibrated"] and time.time() - last_face < 120
+                          and not self.calibrating)
                 for t in self.triggers.evaluate(snap, events, s, time.time(), active):
                     t["event_id"] = self.log_event("trigger", t["id"], t["value"], {"demo": s["demo.enabled"], "zen": self.zen.active},
                                                    t["fired_at"])
                     if self.zen.active and t["id"] not in ("heartbeat", "break_taken"):
                         self.zen.held_back += 1
+                if self.calibrating:
+                    self.triggers.pending.clear()  # recalibrating: nothing fires, nothing wakes the agent
+                    continue
                 if self.zen.active or self.gym:
                     self.triggers.pending.clear()  # Zen or mid-exercise: keep recording, never wake the agent
                     continue
@@ -234,6 +243,7 @@ class App:
         s = self.settings
         c = self.screen.fresh(90) or {}
         allowed = (s["blur.enabled"] and not s["tracking.paused"] and not self.zen.active and not self.gym
+                   and not self.calibrating
                    and snap.get("calibrated") and snap.get("face_present") and not snap.get("talking")
                    and not self.agent.quiet()
                    and c.get("content_type") not in ("video", "meeting", "gaming")
@@ -248,7 +258,7 @@ class App:
             n += 1
             snap = dict(self.snapshot)
             self.history.append(snap)
-            if snap.get("face_present"):
+            if snap.get("face_present") and not self.calibrating:
                 self.db.x("INSERT OR REPLACE INTO metrics_1hz (ts, data, app_category) VALUES (?, ?, ?)",
                           (snap["ts"], json.dumps(snap), snap.get("app_category")))
             try:
@@ -256,7 +266,7 @@ class App:
                 input_age = S.seconds_since_input()
             except Exception:  # noqa: BLE001 - Quartz unavailable
                 input_age = None
-            if snap.get("calibrated") and not self.settings["tracking.paused"]:
+            if snap.get("calibrated") and not self.settings["tracking.paused"] and not self.calibrating:
                 change = self.zen.tick(time.time(), snap, input_age, self.active.get("category"),
                                        self.settings["zen.enter_min"] * 60, self.settings["zen.enabled"],
                                        self.screen.recent(5) if self.settings["privacy.local_vision"] else None)
@@ -374,10 +384,11 @@ class App:
         await asyncio.sleep(delay)
         if self._reflecting or not self.agent.available():
             return None
-        ok, since = R.due(self.db)
+        reset_at = self.settings.get("memory.reset_at", 0)
+        ok, since = R.due(self.db, reset_at=reset_at)
         if not ok and not force:
             return None
-        since = since if ok else (R.last_period_end(self.db) or time.time() - R.LOOKBACK_S)
+        since = since if ok else R.start(self.db, reset_at=reset_at)
         self._reflecting = True
         try:
             until = time.time()
@@ -452,9 +463,34 @@ class App:
 
     # ---------- calibration (§7) ----------
 
+    @property
+    def calibrating(self):
+        return time.time() < self.cal_hold_until
+
     async def calibrate(self, step, args):
         if step not in CAL_SECONDS:
             return await self.send({"type": "error", "code": "bad_step", "message": f"unknown calibration step {step}"})
+        if self.settings["tracking.paused"]:
+            return await self.calibration_failed(step, "Tracking is paused. Resume it and try again.")
+        # data stays NULL while the step runs; DB.close_interrupted logs leftovers if eyeOS quits mid-step
+        cal_id = self.db.x("INSERT INTO calibration (ts, step, data) VALUES (?, ?, NULL)", (time.time(), step))
+        try:
+            await self._calibrate(step, args, cal_id)
+        except Exception as e:  # noqa: BLE001 - report it, or the app's progress ring spins forever
+            traceback.print_exc()
+            await self.calibration_failed(step, f"Something went wrong ({type(e).__name__}). Try again.", cal_id,
+                                          event="calibration_error", error=str(e))
+        finally:
+            with self.lock:
+                self.engine.recorder = None
+
+    async def calibration_failed(self, step, reason, cal_id=None, event="calibration_failed", **extra):
+        await self.send({"type": "calibration", "step": step, "phase": "failed", "progress": 1, "result": {"reason": reason}})
+        if cal_id:
+            self.db.x("UPDATE calibration SET data=? WHERE id=?", (json.dumps({"failed": reason, **extra}), cal_id))
+        self.log_event("system", None, None, {"event": event, "step": step, "reason": reason, **extra})
+
+    async def _calibrate(self, step, args, cal_id):
         samples, dips = [], []
         dur = CAL_SECONDS[step]
         with self.lock:
@@ -466,15 +502,22 @@ class App:
             p = min(1.0, (time.time() - t0) / dur)
             msg = {"type": "calibration", "step": step, "phase": "progress", "progress": round(p, 3)}
             if step == 2:
-                msg["target"] = ["center", "top_left", "top_right", "bottom_right", "bottom_left"][min(4, int(p * 5))]
+                msg["target"] = GAZE_DOTS[min(4, int(p * 5))]
             await self.send(msg)
         with self.lock:
             self.engine.recorder = None
             blinks = [b for b in self.engine.blinks if b[0] >= t0]
         face = [s for s in samples if s["present"]]
-        if not samples or len(face) < 0.5 * len(samples):
-            return await self.send({"type": "calibration", "step": step, "phase": "failed", "progress": 1,
-                                    "result": {"reason": "face not visible for most of the step; try again"}})
+        if self.settings["tracking.paused"]:
+            return await self.calibration_failed(step, "Tracking was paused during the step. Resume it and try again.", cal_id)
+        if not samples:  # the vision loop recorded nothing at all
+            return await self.calibration_failed(step, "The camera isn't sending video. Check it's not in use by another app and try again.", cal_id)
+        if len(face) < 0.5 * len(samples):
+            return await self.calibration_failed(step, "We couldn't see your face for most of the step. Try again.", cal_id)
+        # weak data: still saved, but the user is told it may be off
+        warnings = []
+        if len(face) < 0.8 * len(samples):
+            warnings.append("Your face was out of view for part of the step.")
         cal = {}
         if step == 1:
             cal["w_px_cal"] = round(statistics.median(s["w_px"] for s in face), 3)
@@ -493,8 +536,14 @@ class App:
             gxs = [med(d, "gx") for d in per_dot if d]
             gys = [med(d, "gy") for d in per_dot if d]
             cal.update(gx_min=min(gxs), gx_max=max(gxs), gy_min=min(gys), gy_max=max(gys))
+            if not all(per_dot):
+                warnings.append("We couldn't see your eyes at some of the dots.")
         else:
             open_ = [s for s in face if s.get("state") == "OPEN"]
+            if not open_:
+                warnings.append("We couldn't get a clear look at your eyes.")
+            if len(blinks) < MIN_CAL_BLINKS:
+                warnings.append("We didn't catch many blinks.")
             cal["ear_open"] = round(statistics.median(s["ear"] for s in open_), 4) if open_ else 0.28
             cal["squint_score"] = round(statistics.median(s["squint_score"] for s in open_), 4) if open_ else 0.0
             minutes = len(face) / len(samples) * dur / 60
@@ -502,14 +551,16 @@ class App:
             cal["blink_duration_ms"] = round(1000 * statistics.fmean(b[1] for b in blinks)) if blinks else None
             cal["calibrated"] = True
         cal = {k: (round(v, 4) if isinstance(v, float) else v) for k, v in cal.items()}
-        self.db.x("INSERT INTO calibration (ts, step, data) VALUES (?, ?, ?)", (time.time(), step, json.dumps(cal)))
+        self.db.x("UPDATE calibration SET data=? WHERE id=?", (json.dumps({**cal, "warnings": warnings}), cal_id))
         with self.lock:
             self.engine.set_cal(cal)
             if step == 1:
                 self.engine.distance = None
                 self.engine.dist_raw.clear()
         self.db.save_baseline(self.engine.cal, f"calibration step {step}")
-        await self.send({"type": "calibration", "step": step, "phase": "done", "progress": 1, "result": cal})
+        self.log_event("system", None, None, {"event": "calibration_weak" if warnings else "calibration", "step": step,
+                                              **cal, "warnings": warnings})
+        await self.send({"type": "calibration", "step": step, "phase": "done", "progress": 1, "result": cal, "warnings": warnings})
         await self.send_status(force=True)
 
     # ---------- websocket I/O ----------
@@ -695,11 +746,24 @@ class App:
             self.stop.set()
             await self.speaker.stop()
             self.loop.call_later(0.3, self._finish)
+        elif name == "calibration_end":
+            self.cal_hold_until = 0.0
         elif name == "calibrate":
+            if int(args.get("step", 0)) in (1, 2):  # the setup sheet: hold from its first Start until it closes
+                self.cal_hold_until = time.time() + 180  # safety net if the app never says calibration_end
             asyncio.create_task(self.calibrate(int(args.get("step", 0)), args))
         elif name == "reset_approvals":
             self.db.x("DELETE FROM approvals")
             await self.send_approvals()
+        elif name == "reset_memory":
+            # forget every rule (learned, reflected, agent-saved) and the evidence behind them, so none come straight back
+            self.db.x("DELETE FROM preferences")
+            self.db.set_setting("memory.suppressed", [])
+            self.db.set_setting("memory.reset_at", time.time())
+            self.settings = self.db.settings()
+            self.log_event("system", None, None, {"event": "reset_memory"})
+            await self.send({"type": "settings", "settings": self.settings})
+            await self.send_preferences()
         elif name == "reset_triggers":
             self.db.reset_settings("triggers.")
             self.settings = self.db.settings()

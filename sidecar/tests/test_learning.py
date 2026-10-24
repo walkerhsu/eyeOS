@@ -10,8 +10,8 @@ def call(db, name, approval="approved", status="done", result=None, ts=None):
                 (ts or time.time(), name, status, approval, json.dumps(result) if result is not None else None))
 
 
-def outcome(db, cid, verdict, metric="blink_rate"):
-    db.x("INSERT INTO outcomes (call_id, ts, metric, verdict) VALUES (?, ?, ?, ?)", (cid, time.time(), metric, verdict))
+def outcome(db, cid, verdict, metric="blink_rate", ts=None):
+    db.x("INSERT INTO outcomes (call_id, ts, metric, verdict) VALUES (?, ?, ?, ?)", (cid, ts or time.time(), metric, verdict))
 
 
 def test_learns_what_helps_and_what_does_not(tmp_path):
@@ -56,6 +56,18 @@ def test_apply_upserts_and_removes(tmp_path):
     db.add_preference("Never change dark mode in Figma")  # the agent's own rules are never touched
     learning.apply(db, {})
     assert len(db.preferences()) == 1
+
+
+def test_evidence_before_a_memory_reset_is_ignored(tmp_path):
+    db = DB(tmp_path / "t.db")
+    for v in ("improved", "improved", "improved"):
+        outcome(db, call(db, "remind_to_blink"), v)
+    db.set_approval("set_dark_mode", "declined")
+    reset_at = time.time() + 1
+    assert learning.derive(db, now=reset_at + 60, reset_at=reset_at) == {}
+    for v in ("improved", "improved", "improved"):
+        outcome(db, call(db, "remind_to_blink", ts=reset_at + 10), v, ts=reset_at + 20)
+    assert list(learning.derive(db, now=reset_at + 60, reset_at=reset_at)) == ["effect:remind_to_blink"]
 
 
 def test_suppressed_keys_are_not_relearned(tmp_path):

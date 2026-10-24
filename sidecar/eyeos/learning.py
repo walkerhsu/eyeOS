@@ -27,10 +27,10 @@ def _phrase(tool):
     return PHRASE.get(tool, tool.replace("_", " ").capitalize())
 
 
-def derive(db, now=None, suppressed=()):
-    """key -> rule text, from the last 14 days."""
+def derive(db, now=None, suppressed=(), reset_at=0):
+    """key -> rule text, from the last 14 days (or since the user last reset memory, if later)."""
     now = now or time.time()
-    since = now - WINDOW_S
+    since = max(now - WINDOW_S, reset_at)
     rules = {}
 
     # 1. what helps / what rarely helps (outcome verdicts, measured by the camera before vs after)
@@ -53,9 +53,8 @@ def derive(db, now=None, suppressed=()):
     # 2. what the user turns down
     declined = {r["name"]: r["n"] for r in db.q(
         "SELECT name, COUNT(*) n FROM tool_calls WHERE approval = 'declined' AND ts > ? AND seeded = 0 GROUP BY name", (since,))}
-    for tool, state in db.approvals().items():
-        if state == "declined":
-            declined[tool] = max(declined.get(tool, 0), 2)  # a remembered first-use "no" counts as a clear dislike
+    for r in db.q("SELECT tool FROM approvals WHERE state = 'declined' AND ts > ?", (reset_at,)):
+        declined[r["tool"]] = max(declined.get(r["tool"], 0), 2)  # a remembered first-use "no" counts as a clear dislike
     for tool, n in declined.items():
         if n >= 2:
             rules[f"decline:{tool}"] = f"User has declined {_phrase(tool).lower()} ({n} times): don't use it unless they ask."
