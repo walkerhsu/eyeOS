@@ -410,7 +410,7 @@ These are sent at 15 fps **only when** setting `ui.show_camera_image == true`.
 | type | payload | rate |
 |---|---|---|
 | `hello` | `{version, calibrated, paused, settings}` | on connect |
-| `status` | `{camera_ok, face_present, paused, calibrated, fps, agent_busy, demo_mode, has_claude, zen: {active, since, source, held_back, duration_s}, today: {screen_time_s, breaks, rubs, yawns, nudges, zen_s, longest_zen_s, avg_blink_rate, avg_eye_score}}` | on change + 1 Hz (`today` recomputed every 30 s) |
+| `status` | `{camera_ok, face_present, paused, paused_until, calibrated, fps, agent_busy, demo_mode, has_claude, zen: {active, since, source, held_back, duration_s}, today: {screen_time_s, breaks, rubs, yawns, nudges, zen_s, longest_zen_s, avg_blink_rate, avg_eye_score}}` | on change + 1 Hz (`today` recomputed every 30 s) |
 | `landmarks` | `{ts, face: [[x,y],…478] \| null, hands: [[[x,y],…21],…], iris: {r:[x,y,r], l:[x,y,r]}}` | 15 fps |
 | `metrics` | snapshot (§4.13) | 5 Hz |
 | `event` | `{id, ts, kind, trigger_id, value, details}` | as they happen |
@@ -460,7 +460,7 @@ These are sent at 15 fps **only when** setting `ui.show_camera_image == true`.
 |---|---|
 | `ui_response` | `{request_id, result}` |
 | `tool_result` | `{request_id, ok, result \| error}` |
-| `command` | `{name, args?}`, where `name` is one of `pause`, `resume`, `shutdown`, `calibrate {step}`, `reset_approvals`, `seed_demo`, `wipe_demo`, `generate_summary {date?}`, `audio_control {action: pause\|resume\|stop}`, `run_agent_now` (debug), `zen {on: bool}` (start / end Zen manually) |
+| `command` | `{name, args?}`, where `name` is one of `pause {minutes?}` (with `minutes`, tracking resumes by itself; `status.paused_until` holds the deadline), `resume`, `break_now` (shows a 20 s `look_away_card` the user asked for), `shutdown`, `calibrate {step}`, `reset_approvals`, `seed_demo`, `wipe_demo`, `generate_summary {date?}`, `audio_control {action: pause\|resume\|stop}`, `run_agent_now` (debug), `zen {on: bool}` (start / end Zen manually) |
 | `set_setting` | `{key, value}` |
 | `get_settings` | `{}` |
 | `get_approvals` | `{}` |
