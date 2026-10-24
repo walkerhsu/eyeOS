@@ -1,0 +1,24 @@
+[project]
+name = "eyeos"
+version = "0.1.0"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "mediapipe",
+  "opencv-python",
+  "numpy",
+  "cartesia",
+  "websockets",
+  "pyobjc-framework-Cocoa",
+  "pyobjc-framework-Quartz",
+  "claude-agent-sdk>=0.2.174",
+  "pyobjc-framework-avfoundation>=12.2.2",
+  "pyobjc-framework-libdispatch>=12.2.2",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.uv]
+package = false
+[tool.pytest.ini_options]
+pythonpath = ["."]
