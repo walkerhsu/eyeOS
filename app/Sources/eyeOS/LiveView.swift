@@ -690,6 +690,18 @@ struct CameraView: View {
                 ctx.stroke(p, with: .color(c), lineWidth: 2)
             }
         }
+        // shoulders + neck from MediaPipe Pose: green when upright, orange when posture has drifted
+        if let pose = lm["pose"] as? [[Double]], pose.count >= 13, pose[11].count >= 4, min(pose[11][3], pose[12][3]) > 0.6 {
+            let off = !store.metrics.arr0("posture_issues").isEmpty
+            let color: Color = off ? .orange : .green
+            let l = pt(pose[11]), r = pt(pose[12]), nose = pt(pose[0])
+            let mid = CGPoint(x: (l.x + r.x) / 2, y: (l.y + r.y) / 2)
+            var p = Path()
+            p.move(to: l); p.addLine(to: r)
+            p.move(to: mid); p.addLine(to: nose)
+            ctx.stroke(p, with: .color(color.opacity(0.85)), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+            for c in [l, r] { ctx.fill(Path(ellipseIn: CGRect(x: c.x - 5, y: c.y - 5, width: 10, height: 10)), with: .color(color)) }
+        }
         for hand in (lm["hands"] as? [[[Double]]]) ?? [] {
             for i in fingertips where i < hand.count {
                 let c = pt(hand[i])

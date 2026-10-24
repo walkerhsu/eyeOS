@@ -163,6 +163,7 @@ class Engine:
         self.posture_ref_samples = []
         self.posture_session = None
         self.posture_off_since = None
+        self.pose_feat = None        # latest upper-body geometry from MediaPipe Pose (+ ts)
         self.stares = deque()        # (ts, gap_s) recorded at each dip start, 5 min
         self.open_samples = deque()  # (ts, squint_score, o) 10 s, open frames only
         self.luma = deque()          # (ts, luma) 5 s
@@ -303,6 +304,9 @@ class Engine:
                     events.append({"kind": "yawn", "ts": t, "duration": t - self.yawn_start})
                 self.yawn_start = None
 
+            if f.get("pose") is not None:
+                pf = self._pose_features(f["pose"], w, h)
+                self.pose_feat = {**pf, "ts": t} if pf else None
             self.last.update(o=o, ear=e, gx=gx, gy=gy, yaw=yaw, pitch=pitch, roll=roll)
             self._posture_sample(t, pitch, roll, face[1][1])
 
@@ -408,11 +412,31 @@ class Engine:
                 "blink_duration_change": None if dur_change is None else round(dur_change, 3), "ready": True,
                 "declining": drop >= 0.2 and start - end >= 3 and slope < -0.2 and steady >= 0.7}
 
+    def _pose_features(self, pose, w, h):
+        """Upper-body geometry from MediaPipe Pose (front camera), or None when the shoulders aren't visible.
+
+        neck: nose height above the shoulder line / shoulder width (shrinks when slumping or shrugging)
+        tilt: shoulder-line angle in degrees; lean: nose offset from the shoulder midpoint / shoulder width
+        width: shoulder width / frame width (grows when leaning in); shoulder_y: shoulder midpoint height (0-1)
+        """
+        if not pose or len(pose) < 13 or min(pose[11][3], pose[12][3]) < 0.6:
+            return None
+        ls, rs, nose = pose[11], pose[12], pose[0]
+        sw = math.hypot((ls[0] - rs[0]) * w, (ls[1] - rs[1]) * h)
+        if sw < 1:
+            return None
+        mx, my = (ls[0] + rs[0]) / 2, (ls[1] + rs[1]) / 2
+        tilt = math.degrees(math.atan2((ls[1] - rs[1]) * h, abs(ls[0] - rs[0]) * w))
+        return {"neck": (my - nose[1]) * h / sw, "tilt": tilt, "lean": (nose[0] - mx) * w / sw,
+                "width": sw / w, "shoulder_y": my}
+
     def _posture_sample(self, t, pitch, roll, nose_y):
         if self.posture_session != self.session_start:  # new sitting: learn a fresh reference posture
             self.posture_session, self.posture_ref, self.posture_ref_samples = self.session_start, None, []
             self.posture_off_since = None
-        row = (t, pitch, roll, nose_y, self.distance)
+        p = self.pose_feat if self.pose_feat and t - self.pose_feat["ts"] < 1.0 else {}
+        row = (t, pitch, roll, nose_y, self.distance,
+               p.get("neck"), p.get("tilt"), p.get("lean"), p.get("width"), p.get("shoulder_y"))
         self.posture.append(row)
         _trim(self.posture, t - 30)
         if self.posture_ref is None:
@@ -426,29 +450,50 @@ class Engine:
         cols = list(zip(*rows))[1:]
         return tuple(statistics.median([v for v in c if v is not None]) if any(v is not None for v in c) else None for c in cols)
 
+    def posture_reference(self, seconds=3):
+        """Medians of the last few seconds: saved at calibration step 1 ("sit at arm's length") as a good posture."""
+        rows = [r for r in self.posture if r[0] >= (self.last_ts or 0) - seconds]
+        return list(self._medians(rows)) if rows else None
+
     def posture_state(self, t):
-        """How your sitting posture has drifted from the start of this session (slumping, head drop, tilt, leaning in)."""
-        if self.posture_ref is None or len(self.posture) < 30:
+        """How your posture has drifted from the start of this session (or, until that's learned, from calibration)."""
+        cal_ref = self.cal.get("posture_ref")
+        ref = self.posture_ref or (tuple(cal_ref) if cal_ref and len(cal_ref) == 9 else None)
+        if ref is None or len(self.posture) < 30:
             return {"ready": False, "issues": [], "off_s": 0}
-        pitch, roll, y, d = self._medians(self.posture)
-        rp, rr, ry, rd = self.posture_ref
+        pitch, roll, y, d, neck, tilt, lean, width, sy = self._medians(self.posture)
+        rp, rr, ry, rd, rneck, rtilt, rlean, rwidth, rsy = ref
+        both = lambda a, b: a is not None and b is not None  # noqa: E731
         issues = []
-        if y is not None and ry is not None and y - ry > 0.06:
-            issues.append("slumping")       # head sits lower in the frame than when you started
-        if pitch is not None and rp is not None and pitch - rp < -12:
+        if both(neck, rneck) and rneck > 0:  # shoulders visible: real upper-body geometry
+            if neck < 0.85 * rneck:
+                # the head sank toward the shoulders: either the shoulders came up (tension) or the head went down
+                issues.append("shoulders_raised" if both(sy, rsy) and sy - rsy < -0.03 else "slumping")
+            if both(tilt, rtilt) and abs(tilt - rtilt) > 6:
+                issues.append("shoulders_uneven")
+            if both(lean, rlean) and abs(lean - rlean) > 0.15:
+                issues.append("leaning_sideways")
+            if both(width, rwidth) and width > 1.15 * rwidth:
+                issues.append("leaning_in")
+        elif both(y, ry) and y - ry > 0.06:
+            issues.append("slumping")       # face only: head sits lower in the frame than when you started
+        if both(pitch, rp) and pitch - rp < -12:
             issues.append("head_dropping")  # chin dropping toward the chest
-        if roll is not None and rr is not None and abs(roll - rr) > 10:
+        if both(roll, rr) and abs(roll - rr) > 10:
             issues.append("head_tilted")
-        if d is not None and rd and d < 0.85 * rd:
+        if "leaning_in" not in issues and d is not None and rd and d < 0.85 * rd:
             issues.append("leaning_in")
         if issues:
             self.posture_off_since = self.posture_off_since or t
         else:
             self.posture_off_since = None
         return {"ready": True, "issues": issues, "off_s": round(t - self.posture_off_since) if self.posture_off_since else 0,
-                "delta": {"pitch_deg": _r(pitch - rp if pitch is not None and rp is not None else None, 1),
-                          "roll_deg": _r(roll - rr if roll is not None and rr is not None else None, 1),
-                          "drop": _r(y - ry if y is not None and ry is not None else None, 3),
+                "source": "pose" if both(neck, rneck) else "face",
+                "delta": {"pitch_deg": _r(pitch - rp if both(pitch, rp) else None, 1),
+                          "roll_deg": _r(roll - rr if both(roll, rr) else None, 1),
+                          "neck_ratio": _r(neck / rneck if both(neck, rneck) and rneck else None, 2),
+                          "shoulder_tilt_deg": _r(tilt - rtilt if both(tilt, rtilt) else None, 1),
+                          "lean": _r(lean - rlean if both(lean, rlean) else None, 2),
                           "distance_ratio": _r(d / rd if d and rd else None, 2)}}
 
     def snapshot(self, now=None):

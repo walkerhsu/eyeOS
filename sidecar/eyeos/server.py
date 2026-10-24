@@ -118,13 +118,14 @@ class App:
                         continue
                     f = vision.process(bgr, ts)
                     if rec:
-                        rec.write(json.dumps({k: f[k] for k in ("ts", "w", "h", "face", "blend", "transform", "hands", "luma")}) + "\n")
+                        rec.write(json.dumps({k: f.get(k) for k in ("ts", "w", "h", "face", "blend", "transform", "hands", "luma", "pose")}) + "\n")
                 with self.lock:
                     events = self.engine.update(f)
                 self.frame = bgr
                 if f["face"] is not None or f["hands"] is not None:
                     self.landmarks = {"face": f["face"] if f["face"] is not None else None,
                                       "hands": f["hands"] if f["hands"] is not None else (self.landmarks or {}).get("hands", []),
+                                      "pose": f["pose"] if f.get("pose") is not None else (self.landmarks or {}).get("pose"),
                                       "ts": f["ts"], "o": self.engine.last.get("o") if f["face"] is not None else None}
                 if f["face"] is None and self.landmarks:
                     self.landmarks["face"] = None
@@ -446,6 +447,10 @@ class App:
         if step == 1:
             cal["w_px_cal"] = round(statistics.median(s["w_px"] for s in face), 3)
             cal["distance_cm"] = float(args.get("distance_cm") or self.settings["calibration.distance_cm"])
+            with self.lock:  # "sit at arm's length" is a good-posture moment: posture compares against it at first
+                ref = self.engine.posture_reference(3)
+            if ref:
+                cal["posture_ref"] = [None if v is None else round(v, 4) for v in ref]
         elif step == 2:
             def med(rows, k):
                 v = [r[k] for r in rows if k in r]

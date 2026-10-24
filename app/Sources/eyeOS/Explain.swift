@@ -162,14 +162,17 @@ enum Explain {
 
     static let posture = Explainer(
         title: "Posture",
-        meaning: "How your sitting position has drifted since the start of this session. Slumping, a dropping head or leaning in usually creeps in as you get tired.",
+        meaning: "How your sitting posture has drifted since the start of this session, from your shoulders (MediaPipe Pose) and head. Slumping, raised shoulders or leaning in usually creep in as you get tired.",
         math: """
-        reference = median head position over the first 3 min of the session
+        reference = the first 3 min of the session (calibration until then)
         now = median over the last 30 s
-        slumping: head ≥ 6 % of the frame lower
-        head dropping: pitch ≥ 12° further down
-        head tilted: roll changed ≥ 10°
-        leaning in: distance < 85 % of reference
+        neck = nose height above shoulders ÷ shoulder width
+        slumping: neck < 85 % of reference (head sinks)
+        shoulders raised: same, with the shoulders lifted
+        shoulders uneven: shoulder line tilts ≥ 6°
+        leaning sideways: head ≥ 15 % of shoulder width off-center
+        leaning in: shoulders ≥ 15 % wider, or closer by distance
+        head dropping / tilted: pitch ≥ 12° down / roll ≥ 10°
         """,
         good: "Upright, near your starting position. A reminder comes after 60 s of drift.")
 

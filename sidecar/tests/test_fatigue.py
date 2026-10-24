@@ -118,3 +118,48 @@ def test_conductor_holds_nudges_but_not_priority_ones(tmp_path):
     assert t.take(2001, False, s, interruptible=False)         # rubbing can't wait
     t.pending = {"long_stare": {"id": "long_stare", "fired_at": 3000}}
     assert t.take(3000 + 601, False, s, interruptible=True) is None and not t.pending  # held too long: dropped
+
+
+def pose(nose_y=0.40, ls=(0.62, 0.70), rs=(0.38, 0.70), nose_x=0.50, vis=0.9):
+    p = [[0.5, 0.5, 0, vis] for _ in range(13)]
+    p[0] = [nose_x, nose_y, 0, vis]
+    p[11] = [ls[0], ls[1], 0, vis]
+    p[12] = [rs[0], rs[1], 0, vis]
+    return p
+
+
+def drive(e, t0, seconds, p):
+    feat = e._pose_features(p, 640, 480)
+    for i in range(seconds * 2):
+        e.pose_feat = {**feat, "ts": t0 + i / 2}
+        e._posture_sample(t0 + i / 2, 0.0, 0.0, p[0][1])
+
+
+def test_pose_posture_issues():
+    e = engine()
+    e.session_start, e.distance = 1000, 60
+    drive(e, 1000, 200, pose())                      # upright reference
+    assert e.posture_state(1200)["issues"] == [] and e.posture_state(1200)["source"] == "pose"
+    drive(e, 1200, 40, pose(nose_y=0.52))            # head sinks toward the shoulders
+    assert "slumping" in e.posture_state(1240)["issues"]
+    drive(e, 1300, 40, pose(ls=(0.62, 0.58), rs=(0.38, 0.58)))  # shoulders come up toward the ears
+    assert "shoulders_raised" in e.posture_state(1340)["issues"]
+    drive(e, 1400, 40, pose(ls=(0.62, 0.62), rs=(0.38, 0.76)))  # one shoulder drops
+    assert "shoulders_uneven" in e.posture_state(1440)["issues"]
+    drive(e, 1500, 40, pose(ls=(0.68, 0.72), rs=(0.32, 0.72), nose_y=0.38))  # wider shoulders = leaning in
+    assert "leaning_in" in e.posture_state(1540)["issues"]
+
+
+def test_hidden_shoulders_fall_back_to_face():
+    e = engine()
+    assert e._pose_features(pose(vis=0.2), 640, 480) is None
+
+
+def test_calibration_posture_ref_used_before_session_ref():
+    e = engine()
+    e.session_start, e.distance = 1000, 60
+    feat = e._pose_features(pose(), 640, 480)
+    e.cal["posture_ref"] = [0, 0, 0.40, 60, feat["neck"], feat["tilt"], feat["lean"], feat["width"], feat["shoulder_y"]]
+    drive(e, 1000, 20, pose(nose_y=0.52))            # only 20 s in: no session reference yet
+    st = e.posture_state(1020)
+    assert st["ready"] and "slumping" in st["issues"]
