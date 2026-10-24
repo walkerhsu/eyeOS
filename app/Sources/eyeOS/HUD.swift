@@ -140,6 +140,10 @@ struct HUDView: View {
             if hover {
                 Text(issue.text).font(.caption).foregroundStyle(.secondary).frame(width: 200, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
+                if let e = issue.exercise {
+                    Button { store.startExercise(e) } label: { Label("\(e.title) · \(e.seconds) s", systemImage: e.icon) }
+                        .buttonStyle(.borderedProminent).controlSize(.small).tint(.teal)
+                }
                 HStack(spacing: 10) {
                     Button("Break now") { store.sidecar.command("break_now") }
                     Button("Hide") { store.set("ui.show_hud", false) }

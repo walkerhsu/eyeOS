@@ -138,28 +138,42 @@ func scoreLabel(_ s: Double?) -> String {
 struct Issue {
     let text: String
     let short: String
+    var exercise: Exercise? = nil   // the guided exercise that fits this issue, offered by the HUD and menu bar
+}
+
+/// A guided exercise the user can start themselves; the sidecar runs the same scripts the agent uses.
+struct Exercise: Identifiable {
+    let id: String
+    let title: String
+    let icon: String
+    let seconds: Int
+
+    static let blink = Exercise(id: "deliberate_blink", title: "Blink exercise", icon: "eye", seconds: 30)
+    static let focus = Exercise(id: "focus_shift", title: "Focus shift", icon: "arrow.left.and.right", seconds: 30)
+    static let palming = Exercise(id: "palming", title: "Palming", icon: "hand.raised", seconds: 45)
+    static let all = [blink, focus, palming]
 }
 
 func topIssue(_ m: J) -> Issue {
     if !m.bool("face_present") { return Issue(text: "Sit in front of the camera to start measuring.", short: "Away") }
     if !m.bool("calibrated") { return Issue(text: "Calibrate once so eyeOS knows your normal.", short: "Calibrate") }
-    if (m.num("perclos") ?? 0) > 0.15 { return Issue(text: "Your eyes are closing a lot. Signs of tiredness.", short: "Eyes tired") }
-    if (m.num("blink_rate") ?? 99) < 8 { return Issue(text: "You're blinking much less than usual.", short: "Blink more") }
+    if (m.num("perclos") ?? 0) > 0.15 { return Issue(text: "Your eyes are closing a lot. Signs of tiredness.", short: "Eyes tired", exercise: .palming) }
+    if (m.num("blink_rate") ?? 99) < 8 { return Issue(text: "You're blinking much less than usual.", short: "Blink more", exercise: .blink) }
     if m.obj("blink_trend")?.bool("declining") == true {
-        return Issue(text: "Your blinking has been sliding. You may be getting tired.", short: "Blinks sliding")
+        return Issue(text: "Your blinking has been sliding. You may be getting tired.", short: "Blinks sliding", exercise: .blink)
     }
     if (m.num("blink_rate") ?? 0) > 30 {
-        return Issue(text: "You're blinking a lot. Your eyes may already feel dry or irritated.", short: "Eyes irritated")
+        return Issue(text: "You're blinking a lot. Your eyes may already feel dry or irritated.", short: "Eyes irritated", exercise: .palming)
     }
     if !m.arr0("posture_issues").isEmpty && (m.num("posture_off_s") ?? 0) > 60 {
         return Issue(text: "Your posture is drifting, a common sign of tiredness.", short: "Sit back")
     }
     if (m.num("since_real_break_s") ?? 0) > 1800 {
-        return Issue(text: "No real break for \(duration(m.num("since_real_break_s"))).", short: "Break due")
+        return Issue(text: "No real break for \(duration(m.num("since_real_break_s"))).", short: "Break due", exercise: .focus)
     }
-    if (m.num("incomplete_pct") ?? 0) > 0.4 { return Issue(text: "Many blinks aren't closing fully.", short: "Full blinks") }
-    if (m.num("current_stare_s") ?? 0) > 15 { return Issue(text: "Long stare. Your eyes haven't blinked in a while.", short: "Blink") }
-    if m.bool("squinting") { return Issue(text: "You're squinting at the screen.", short: "Squinting") }
+    if (m.num("incomplete_pct") ?? 0) > 0.4 { return Issue(text: "Many blinks aren't closing fully.", short: "Full blinks", exercise: .blink) }
+    if (m.num("current_stare_s") ?? 0) > 15 { return Issue(text: "Long stare. Your eyes haven't blinked in a while.", short: "Blink", exercise: .blink) }
+    if m.bool("squinting") { return Issue(text: "You're squinting at the screen.", short: "Squinting", exercise: .palming) }
     if let d = m.num("distance_cm"), d < 40 { return Issue(text: "You're sitting close to the screen.", short: "Too close") }
     return Issue(text: "Everything looks comfortable.", short: "All good")
 }

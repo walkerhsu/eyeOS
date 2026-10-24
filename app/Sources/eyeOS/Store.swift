@@ -221,6 +221,7 @@ final class Store: ObservableObject {
     var inZen: Bool { zen.bool("active") }
     var today: J { status.obj("today") ?? [:] }
     func setZen(_ on: Bool) { sidecar.command("zen", ["on": on]) }
+    func startExercise(_ e: Exercise) { sidecar.command("exercise", ["type": e.id, "duration_s": e.seconds]) }
 
     /// Worst status across the Live cards, for the menu bar dot.
     var worstLevel: Level {

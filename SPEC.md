@@ -825,7 +825,7 @@ See §8 for the cards. It is a plain `ScrollView`, not a grouped `Form`.
 - **Icon:** an eye glyph, plus the live blink rate (e.g. `👁 7`), plus a colored dot (worst card status). In Zen: the eye glyph only.
 - **Popover** (`.window` style, 320 pt), answering "how am I doing?" from any app. It leads with the one thing to do, then the evidence:
   1. Eye-score ring, label and the top issue sentence (same `topIssue` as the Live hero card).
-  2. Last real break, a bar toward the `no_break` threshold, and **Break now** (`command:break_now`).
+  2. Last real break, a bar toward the `no_break` threshold, **Break now** (`command:break_now`), the guided exercise that fits the top issue (e.g. **Blink exercise · 30 s**), and a menu of all three exercises (`command:exercise`).
   3. A 2×2 grid: blink rate (vs. normal), distance, posture, drowsiness. Dots use the same thresholds as the icon's dot.
   4. Eye score over the last 10 min (Zen shaded).
   5. One line each: what the conductor sees (and whether nudges are held), the last agent action, and today's screen time / breaks / Zen.
@@ -837,7 +837,8 @@ See §8 for the cards. It is a plain `ScrollView`, not a grouped `Form`.
 A small always-on-top pill (`ui.show_hud`, on by default) for peripheral awareness while working in other apps. It is a non-activating `.floating` panel on all spaces, bottom-right by default (away from the banner stack), draggable, with its position remembered.
 - **Calm** (all good): colored dot + time since the last real break, at 35% opacity.
 - **Drifting** (dot amber, or a break is due): dot + the short top issue ("Blink more", "Sit back", "Too close", "Break due"), at 80%; at red, 100% with one soft pulse when it turns red. Never a repeating animation.
-- **Hover:** full opacity, the full top-issue sentence, and **Break now** / **Hide**. Click opens the dashboard.
+- **Hover:** full opacity, the full top-issue sentence, the exercise that fits it when there is one, and **Break now** / **Hide**. Click opens the dashboard.
+- **Exercise per issue:** low or sliding blinks, incomplete blinks, long stare → deliberate blinking (30 s); tired eyes, over-blinking, squinting → palming (45 s); break due → focus shift (30 s). Posture, distance and "all good" offer none.
 - **Hidden** in Zen, while paused, during meetings or entertainment (conductor), on calls, after 60 s with no face, and while the eyeOS window is in front.
 
 ### 11.5 Overlays (UI tools)

@@ -87,13 +87,24 @@ struct MenuBarPanel: View {
         let due = store.settings.num("triggers.no_break.threshold") ?? 1200
         let level = levelLow(since / 60, good: due / 60, warn: due / 30)
         return VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Label("Last real break \(duration(since)) ago", systemImage: "cup.and.saucer.fill")
-                    .font(.callout).foregroundStyle(level == .good ? .primary : level.color)
-                Spacer()
-                Button("Break now") { store.sidecar.command("break_now") }.controlSize(.small)
-            }
+            Label("Last real break \(duration(since)) ago", systemImage: "cup.and.saucer.fill")
+                .font(.callout).foregroundStyle(level == .good ? .primary : level.color)
             ProgressView(value: min(1, since / due)).tint(level.color).controlSize(.small)
+            HStack(spacing: 8) {
+                Button("Break now") { store.sidecar.command("break_now") }
+                if let e = topIssue(store.metrics).exercise {  // the one that fits what's going on now
+                    Button { store.startExercise(e) } label: { Label("\(e.title) · \(e.seconds) s", systemImage: e.icon) }
+                        .buttonStyle(.borderedProminent).tint(.teal)
+                }
+                Spacer()
+                Menu {
+                    ForEach(Exercise.all) { e in
+                        Button { store.startExercise(e) } label: { Label("\(e.title) · \(e.seconds) s", systemImage: e.icon) }
+                    }
+                } label: { Image(systemName: "figure.mind.and.body") }
+                .menuIndicator(.hidden).fixedSize().help("Guided eye exercises")
+            }
+            .controlSize(.small)
         }
     }
 
