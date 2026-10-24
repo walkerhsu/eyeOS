@@ -47,7 +47,8 @@ class App:
         self.today = {}
         self.speaker = Speaker(lambda: self.settings)
         self.agent = Agent(self)
-        self.screen = ScreenWatch(lambda: self.settings, lambda: bool(self.snapshot.get("face_present")))
+        self.screen = ScreenWatch(lambda: self.settings, lambda: bool(self.snapshot.get("face_present")),
+                                  self.conductor_metrics, self.on_conductor)
         self.ws = None
         self.loop = None
         self.futures = {}
@@ -312,6 +313,27 @@ class App:
                 asyncio.create_task(self.zen_recap(info))
         self.today = self.today_stats()
         await self.send_status(force=True)
+
+    # ---------- conductor (on-device, every 30 s) ----------
+
+    def conductor_metrics(self):
+        """The short metric summary the conductor sees next to the screenshot."""
+        s = self.snapshot
+        return {"face_present": s.get("face_present"), "blink_rate": s.get("blink_rate"),
+                "your_normal_blink_rate": self.engine.cal.get("blink_rate"), "eye_score": s.get("eye_score"),
+                "distance_cm": s.get("distance_cm"), "posture_issues": s.get("posture_issues"),
+                "talking": s.get("talking"), "since_real_break_min": round((s.get("since_real_break_s") or 0) / 60),
+                "session_min": round((s.get("session_s") or 0) / 60), "typing": self.typing(),
+                "app": {k: self.active.get(k) for k in ("name", "category")}, "zen": self.zen.active,
+                "pending_nudges": list(self.triggers.pending)}
+
+    def on_conductor(self, d):
+        prev = self.screen.history[-2] if len(self.screen.history) > 1 else None
+        self.db.x("INSERT OR REPLACE INTO conductor_log (ts, data) VALUES (?, ?)", (d["ts"], json.dumps(d)))
+        if d.get("situation") and (not prev or prev.get("situation") != d["situation"]):
+            self.log_event("system", None, d.get("interruptibility"),
+                           {"event": "situation", "situation": d["situation"], "focus": d.get("focus"),
+                            "activity": d.get("activity"), "reason": d.get("reason")}, d["ts"])
 
     def zen_stats(self, since, until):
         """Everything recorded while Zen kept eyeOS silent: metrics, events, and the alerts it held back."""

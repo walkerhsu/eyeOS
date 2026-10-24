@@ -255,7 +255,13 @@ struct EventCard: View {
         case "yawn": "Yawn"
         case "blink_anomaly": event == "eyes_closed" ? "Eyes closed" : "Long blink"
         case "zen": event == "zen_start" ? "Zen started" : "Zen ended"
-        default: humanize(event.isEmpty ? "system" : event)
+        default:
+            switch event {
+            case "situation": "Now: " + humanize(e.obj("details")?.str("situation") ?? "")
+            case "deferred": "Held a nudge"
+            case "reflection": "Reflection"
+            default: humanize(event.isEmpty ? "system" : event)
+            }
         }
     }
 
@@ -277,7 +283,14 @@ struct EventCard: View {
                 if let n = r.int("rubs"), n > 0 { parts.append("\(n) rub\(n == 1 ? "" : "s")") }
             }
             return parts.joined(separator: " · ")
-        default: return isErrorEvent(e) ? "Something went wrong" : "System"
+        default:
+            if isErrorEvent(e) { return "Something went wrong" }
+            switch event {
+            case "situation": return [d.str("activity"), d.str("reason")].compactMap { $0 }.joined(separator: " · ")
+            case "deferred": return d.str("reason") ?? ""
+            case "reflection": return d.str("summary") ?? ""
+            default: return "System"
+            }
         }
     }
 
@@ -292,14 +305,16 @@ struct EventCard: View {
         switch e.str("kind") {
         case "trigger": "bolt.fill"; case "break": "figure.walk"; case "rub": "hand.raised.fill"; case "yawn": "mouth"
         case "blink_anomaly": "eye.slash"; case "zen": "moon.stars.fill"
-        default: isErrorEvent(e) ? "exclamationmark.triangle.fill" : "gearshape"
+        default:
+            isErrorEvent(e) ? "exclamationmark.triangle.fill" :
+            ["situation": "lock.display", "deferred": "hourglass", "reflection": "sparkles"][event] ?? "gearshape"
         }
     }
 
     var color: Color {
         switch e.str("kind") {
         case "trigger": .yellow; case "break": .green; case "zen": .indigo; case "rub", "blink_anomaly", "yawn": .orange
-        default: isErrorEvent(e) ? .pink : .gray
+        default: isErrorEvent(e) ? .pink : ["situation": Color.mint, "deferred": .indigo, "reflection": .purple][event] ?? .gray
         }
     }
 }

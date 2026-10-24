@@ -3,7 +3,6 @@ import asyncio
 import datetime as dt
 import re
 import subprocess
-import tempfile
 
 import cv2
 
@@ -85,24 +84,38 @@ def time_of_day():
 
 
 def screenshot_jpeg(width=1280):
-    """Main display screenshot, resized, as JPEG bytes (or None without Screen Recording)."""
-    with tempfile.NamedTemporaryFile(suffix=".jpg") as f:
-        ok, _ = run(["screencapture", "-x", "-m", "-t", "jpg", f.name], 10)
-        img = cv2.imread(f.name) if ok else None
+    """Main display screenshot as JPEG bytes, captured straight into memory (never written to disk), or None without
+    Screen Recording permission. Returns a bytearray so the caller can wipe it (see wipe())."""
+    import Quartz
+    import numpy as np
+    img = Quartz.CGDisplayCreateImage(Quartz.CGMainDisplayID())
     if img is None:
         return None
-    h, w = img.shape[:2]
-    img = cv2.resize(img, (width, int(h * width / w)))
-    return cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 70])[1].tobytes()
+    w, h, bpr = Quartz.CGImageGetWidth(img), Quartz.CGImageGetHeight(img), Quartz.CGImageGetBytesPerRow(img)
+    data = Quartz.CGDataProviderCopyData(Quartz.CGImageGetDataProvider(img))
+    bgra = np.frombuffer(data, np.uint8)[:bpr * h].reshape(h, bpr // 4, 4)[:, :w]
+    small = cv2.resize(bgra[:, :, :3], (width, int(h * width / w)))
+    del bgra, data, img
+    jpg = bytearray(cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 70])[1].tobytes())
+    small.fill(0)
+    return jpg
+
+
+def wipe(buf):
+    """Overwrite a screenshot buffer in place once it's been used."""
+    if isinstance(buf, bytearray):
+        buf[:] = bytes(len(buf))
 
 
 def screen_luma():
-    with tempfile.NamedTemporaryFile(suffix=".jpg") as f:
-        ok, _ = run(["screencapture", "-x", "-m", "-t", "jpg", f.name], 10)
-        img = cv2.imread(f.name, cv2.IMREAD_GRAYSCALE) if ok else None
-    if img is None:
+    """Mean screen brightness 0-255 from a tiny in-memory capture (nothing written to disk)."""
+    jpg = screenshot_jpeg(64)
+    if jpg is None:
         return None
-    return round(float(cv2.resize(img, (64, 64 * img.shape[0] // img.shape[1])).mean()))
+    import numpy as np
+    img = cv2.imdecode(np.frombuffer(bytes(jpg), np.uint8), cv2.IMREAD_GRAYSCALE)
+    wipe(jpg)
+    return round(float(img.mean()))
 
 
 def seconds_since_key():

@@ -45,12 +45,14 @@ struct StatusPills: View {
     @ViewBuilder var visionPill: some View {
         let v = store.status.obj("local_vision") ?? [:]
         if store.connected && v.bool("enabled") {
+            let situation = v.str("situation").map(humanize)
+            let quiet = (v.num("interruptibility") ?? 1) < 0.35
             Button { store.page = .settings } label: {
-                Pill(text: v.bool("ok") ? "On-device vision" : "Vision off", icon: v.bool("ok") ? "lock.shield.fill" : "lock.slash",
-                     color: v.bool("ok") ? .mint : .secondary)
+                Pill(text: v.bool("ok") ? (situation.map { "\($0)\(quiet ? " · holding nudges" : "")" } ?? "On-device vision") : "Vision off",
+                     icon: v.bool("ok") ? "lock.shield.fill" : "lock.slash", color: v.bool("ok") ? (quiet ? .indigo : .mint) : .secondary)
             }
             .buttonStyle(.plain)
-            .help(v.bool("ok") ? "A local model sees: \(v.str("activity") ?? "–"). Screenshots never leave this Mac."
+            .help(v.bool("ok") ? "On-device conductor: \(v.str("activity") ?? "–"). \(v.str("reason") ?? "") Screenshots are wiped after each check and never leave this Mac."
                                : (v.str("error") ?? "Starting the local model…"))
         }
     }

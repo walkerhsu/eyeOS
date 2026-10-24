@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS preferences  (id INTEGER PRIMARY KEY, ts REAL, rule T
 CREATE TABLE IF NOT EXISTS baselines    (id INTEGER PRIMARY KEY, ts REAL, data TEXT, reason TEXT);
 CREATE TABLE IF NOT EXISTS calibration  (id INTEGER PRIMARY KEY, ts REAL, step INTEGER, data TEXT);
 CREATE TABLE IF NOT EXISTS summaries    (date TEXT PRIMARY KEY, ts REAL, text TEXT, stats TEXT, seeded INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS conductor_log (ts REAL PRIMARY KEY, data TEXT);  -- text-only decisions of the on-device conductor
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_calls_run ON tool_calls(run_id);
 """
@@ -70,7 +71,7 @@ SETTINGS = {
     "agent.trigger_cooldown_s": (600, _num(10, 3600, int)),
     "privacy.local_vision": (True, _bool),          # describe the screen with a local model; pixels never leave the Mac
     "privacy.local_model": ("gemma4", lambda v: isinstance(v, str) and 0 < len(v) < 80),
-    "privacy.screen_interval_s": (60, _num(20, 600, int)),
+    "privacy.screen_interval_s": (30, _num(20, 600, int)),
     "agent.max_tool_iterations": (6, _num(1, 10, int)),
     "zen.enabled": (True, _bool),
     "zen.enter_min": (10, _num(1, 60)),
@@ -112,6 +113,7 @@ class DB:
         except sqlite3.OperationalError:
             pass
         self.c.execute("DELETE FROM metrics_1hz WHERE ts < ?", (time.time() - 30 * 86400,))
+        self.c.execute("DELETE FROM conductor_log WHERE ts < ?", (time.time() - 30 * 86400,))
         self.close_interrupted()
 
     def close_interrupted(self):

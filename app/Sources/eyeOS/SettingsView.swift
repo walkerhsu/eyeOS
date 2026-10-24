@@ -135,7 +135,7 @@ struct SettingsView: View {
         let v = store.status.obj("local_vision") ?? [:]
         return SettingsCard(title: "Privacy & on-device vision", icon: "lock.shield", color: .mint,
                             subtitle: "No webcam frames or screenshots are ever sent to \(store.providerName). A local model on this Mac describes the screen, and only that short text reaches the agent.") {
-            SettingRow("Understand what I'm doing", detail: "A local model looks at the screen every minute") {
+            SettingRow("Understand what I'm doing", detail: "A local model checks the screen every 30 s; each screenshot is wiped right after") {
                 Toggle("", isOn: bool("privacy.local_vision")).labelsHidden().toggleStyle(.switch)
             }
             SettingRow("Local model", detail: "Any vision model pulled in Ollama (e.g. gemma4, qwen2.5vl)") {
@@ -145,8 +145,8 @@ struct SettingsView: View {
                     .onSubmit { if let m = localModel?.trimmingCharacters(in: .whitespaces), !m.isEmpty { store.set("privacy.local_model", m) } }
             }
             SettingRow("Look every") {
-                Stepper("\(store.settings.int("privacy.screen_interval_s") ?? 60) s",
-                        value: Binding(get: { store.settings.int("privacy.screen_interval_s") ?? 60 },
+                Stepper("\(store.settings.int("privacy.screen_interval_s") ?? 30) s",
+                        value: Binding(get: { store.settings.int("privacy.screen_interval_s") ?? 30 },
                                        set: { store.set("privacy.screen_interval_s", $0) }), in: 20...600, step: 10)
             }
             SettingRow("Status", detail: v.bool("ok") ? "Last look \(duration(v.num("age_s"))) ago: \(v.str("activity") ?? "–")"
