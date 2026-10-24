@@ -4,72 +4,49 @@ An eye-strain coach for macOS. See [SPEC.md](SPEC.md).
 
 ## Architecture
 
-eyeOS has two AI models (the **screen agent** and the **reasoning agent**). Everything around them is fast,
-deterministic code. Detection, deciding when to wake the agent, the safety gate and judging whether an action
-helped all happen without an LLM. The models only interpret context and choose actions.
+An on-device **conductor** orchestrates eyeOS. It's a local vision model that checks in every 30 s, works out what
+you're doing and how interruptible you are, controls Zen, and decides when the cloud reasoning agent may act.
+Detection runs continuously underneath it. A reflection agent turns each stretch of use into memory.
 
 ```mermaid
-flowchart LR
-    subgraph Mac["Your Mac (on-device)"]
-        cam([Webcam]) --> det
-        scr([Screen]) --> sw
+flowchart TB
+    cam([Webcam]) --> det
+    scr([Screen]) -->|"screenshot every 30 s,<br/>in memory, wiped after use"| cond
 
-        subgraph sidecar["Python sidecar"]
-            det["<b>Detection</b><br/>MediaPipe face + hands<br/>metrics.py: blinks, half blinks, stare,<br/>PERCLOS, squint, distance, gaze,<br/>posture, talking, rubs, yawns, breaks"]
-            sw["<b>Screen agent</b> (local VLM)<br/>screen_watch.py · Ollama gemma4<br/>every 60 s: what you're doing,<br/>text size, background"]
-            trig["<b>Triggers + Zen gate</b><br/>triggers.py · zen.py<br/>thresholds, sustain, cooldowns,<br/>silence during deep focus"]
-            ctx["<b>Context builder</b><br/>metrics, 10-min trend, baseline,<br/>app category, screen description,<br/>memory, recent outcomes"]
-            gate["<b>Approval gate</b><br/>Zen / quiet apps / blocked tiers /<br/>first-use + ask-tier approval"]
-            act["<b>Action layer</b><br/>tools/system.py: brightness, dark mode,<br/>contrast, text zoom, Focus, windows<br/>tts.py: voice (Cartesia or macOS say)"]
-            eval["<b>Outcome evaluator</b><br/>metric before vs 15–195 s after"]
-            learn["<b>Memory</b> · learning.py<br/>what helps, what you decline,<br/>how you answer"]
-            db[(SQLite)]
-        end
-
-        subgraph app["Swift app"]
-            ui["Live · Log · Agent · Settings<br/>menu bar"]
-            ov["Overlays: edge glow, break /<br/>posture cards, exercises,<br/>ask_user, approvals, Zen recap"]
-        end
-
-        det --> trig
-        trig -->|wake| ctx
-        sw -->|text only| ctx
-        gate --> act
-        gate -->|UI tools| ov
-        act --> eval
-        ov --> eval
-        eval --> learn --> ctx
-        det & trig & eval & learn --> db
-        sidecar <-->|WebSocket| app
+    subgraph mac["On your Mac"]
+        det["<b>Detection</b> · every frame<br/>blinks, stare, PERCLOS, squint, distance,<br/>posture, talking, rubs, yawns, breaks"]
+        cond{{"<b>Conductor</b> · local VLM, every 30 s<br/>situation · focus · interruptibility<br/>→ Zen on/off · nudge now or wait"}}
+        act["<b>Action layer</b><br/>macOS settings, overlays, voice"]
+        mem[("<b>Memory</b><br/>learned + reflected rules")]
+        refl["<b>Reflection agent</b><br/>display off / next launch"]
     end
 
-    subgraph cloud["Cloud"]
-        llm["<b>Reasoning agent</b><br/>Claude (Agent SDK) or Codex CLI<br/>agent.py / codex.py"]
+    subgraph cloud["Cloud (your Claude or Codex login)"]
+        llm["<b>Reasoning agent</b><br/>picks the action and words it"]
     end
 
-    ctx -->|"numbers + short text,<br/>no images, no window titles"| llm
-    llm -->|tool calls via MCP| gate
+    det -->|metrics| cond
+    det -->|"problem detected"| cond
+    cond -->|"good moment: wake<br/>(numbers + text only)"| llm
+    mem --> llm
+    llm -->|tool calls| act
+    act -->|"did it help?"| mem
+    refl -->|rules| mem
+    det -.->|history| refl
 ```
 
-| Part | What it is | Runs | Code |
+| Part | Role | Runs | Code |
 |---|---|---|---|
-| **Detection** | Signal processing, not an LLM. MediaPipe face and hand landmarks at camera rate feed a rolling-window engine that turns them into eye and posture metrics, and logs events (blinks, rubs, yawns, breaks). | on-device, every frame | `vision.py`, `metrics.py` |
-| **Screen agent** | A local vision model. Every 60 s, while you're at the screen, it describes what you're doing ("editing Python in VS Code, small text, dark background", whether it's long reading, whether listening could replace looking). | on-device, Ollama | `screen_watch.py` |
-| **Triggers + Zen gate** | Rules that decide *when* the reasoning agent wakes: thresholds with a sustain time, cooldowns, a gap between runs (eye rubs and leaning in skip the gap), and a heartbeat. In Zen everything still records, but nothing wakes the agent. | on-device | `triggers.py`, `zen.py` |
-| **Reasoning agent** | The LLM. It gets the context, writes a short rationale, then picks the least disruptive action (or none), escalating only when earlier actions didn't help. | Claude Agent SDK or Codex CLI (your own login) | `agent.py`, `codex.py`, `mcp_bridge.py` |
-| **Approval gate** | Code between the agent and every action: blocks visible actions in Zen and quiet apps, honors blocked tools, and asks you first on a tool's first use or when it's set to "ask". | on-device | `agent.py` `call_tool` |
-| **Action layer** ("action / voice agent") | Executes what the agent chose. macOS changes (brightness, dark mode, contrast, Focus, text zoom, window size), Swift overlays (edge glow, 20-20-20 card, posture card, guided exercises, questions), and voice (reads a page aloud, or speaks a summary written by the local model). It's not a separate LLM. | on-device | `tools/system.py`, `Overlays.swift`, `tts.py` |
-| **Outcome evaluator** | About 3 min after each action, compares its target metric before vs after (e.g. blink rate) → improved / neutral / worse; break suggestions check whether you really looked away. | on-device | `agent.py` `evaluate_outcome` |
-| **Memory** | Learned rules from the last 14 days (what tends to help, what rarely helps, what you decline, whether you usually say "not now"), plus rules the agent saves. Sent with every run. | on-device | `learning.py` |
+| **Detection** | Signal processing, not an LLM: MediaPipe face and hand landmarks → eye and posture metrics and events. Flags problems (low or frequent blinking, leaning in, rubbing…). | on-device, every frame | `metrics.py`, `triggers.py` |
+| **Conductor** (orchestrator) | Local vision model. Every 30 s it reads one screenshot plus the metrics and its previous check, and returns the activity, situation, focus and interruptibility. Turns Zen on and off, and holds nudges during meetings and deep work (rubbing and leaning in still go out). Falls back to rules without Ollama. | on-device, Ollama | `screen_watch.py`, `zen.py` |
+| **Reasoning agent** | The cloud LLM, woken only when the conductor says it's a good moment. Picks the least disruptive action (or none) and writes the message. Every action passes a code-enforced approval check. | Claude Agent SDK or Codex CLI | `agent.py`, `codex.py` |
+| **Action layer** | Carries out the choice: brightness, dark mode, contrast, text zoom, Focus, windows; overlays (edge glow, break and posture cards, exercises, questions); voice (read aloud, or a spoken summary made by the local model). | on-device | `tools/system.py`, `Overlays.swift`, `tts.py` |
+| **Memory** | Rules sent with every run: learned from outcomes, declines and answers (what helps, what you dislike), plus what reflection writes. | on-device | `learning.py` |
+| **Reflection agent** | When the display turns off (or at the next launch, after a shutdown), reviews the unreflected stretch by hour and by situation, and writes a summary, 2–4 rules and one thing to try. | reasoning agent, numbers only | `reflection.py` |
 
-**One cycle.** You stop blinking. Detection reports a low blink rate, and the trigger fires after it lasts 2 min. The
-context builder adds your baseline, the trend, "coding in VS Code" from the screen agent, and memory ("the edge-glow
-blink reminder tends to help this user"). The reasoning agent picks `remind_to_blink`. The gate sees it's already
-approved, and the glow pulses. About 3 min later the evaluator scores it, and memory updates its counts.
-
-**Privacy boundary.** Camera frames and screenshots never leave the Mac. The cloud model receives numbers, the app
-name and category, the local model's short screen description and your memory rules. It never gets images, window
-titles or page text. Spoken text goes to Cartesia only if you set a Cartesia key; otherwise macOS `say` speaks it on-device.
+**Privacy.** Camera frames never leave the Mac. Screenshots are captured into memory, never written to disk, shown
+only to the local model, and wiped after each check. The cloud model gets numbers, the app name, the conductor's
+short text and memory rules: no images, window titles or page text. Voice uses macOS `say` unless you add a Cartesia key.
 
 ## Run
 
