@@ -1,6 +1,7 @@
 """The sidecar hub: vision thread, WebSocket server, trigger/agent scheduling (SPEC §2, §6)."""
 import asyncio
 import collections
+import datetime as dt
 import gzip
 import json
 import os
@@ -17,16 +18,19 @@ import cv2
 
 from . import demo
 from . import tools as T
-from .agent import CLAUDE_CLI, Agent
+from .agent import CLIS, Agent
 from .db import DB, TRIGGERS, validate_setting
 from .metrics import Engine
 from .tools import system as S
 from .triggers import Triggers
 from .tts import Speaker
+from .zen import Zen, eye_score
 
 VERSION = "0.1.0"
 EVENT_KIND = {"rub": "rub", "yawn": "yawn", "break": "break", "eyes_closed": "blink_anomaly", "blink": "blink_anomaly"}
 CAL_SECONDS = {1: 3, 2: 10, 3: 60}
+HISTORY_KEYS = ("blink_rate", "perclos", "distance_cm", "squint_delta", "incomplete_pct", "eye_score", "current_stare_s",
+                "longest_stare_s", "gaze_on_screen", "blink_duration_ms", "since_real_break_s", "zen")
 
 
 class App:
@@ -38,6 +42,8 @@ class App:
         self.lock = threading.Lock()
         self.engine = Engine(cal=self.db.baseline(), adv=self._adv(), today_s=self._today_s())
         self.triggers = Triggers()
+        self.zen = Zen()
+        self.today = {}
         self.speaker = Speaker(lambda: self.settings)
         self.agent = Agent(self)
         self.ws = None
@@ -61,7 +67,6 @@ class App:
         return {k[9:]: v for k, v in self.settings.items() if k.startswith("advanced.")}
 
     def _today_s(self):
-        import datetime as dt
         d0 = dt.datetime.combine(dt.date.today(), dt.time()).timestamp()
         r = self.db.q("SELECT MAX(json_extract(data, '$.screen_time_today_s')) s FROM metrics_1hz WHERE ts >= ? AND seeded=0", (d0,))
         return r[0]["s"] or 0
@@ -167,6 +172,8 @@ class App:
                 with self.lock:
                     snap = self.engine.snapshot(time.time())
                 snap["app_category"] = self.active.get("category")
+                snap["eye_score"] = eye_score(snap, self.engine.cal)
+                snap["zen"] = self.zen.active
                 self.snapshot = snap
                 events, self.pending_events = self.pending_events, []
                 await self.send({"type": "metrics", **snap})
@@ -174,9 +181,15 @@ class App:
                 last_face = self.engine.last_face_ts or 0
                 active = (not s["tracking.paused"] and snap["calibrated"] and time.time() - last_face < 120)
                 for t in self.triggers.evaluate(snap, events, s, time.time(), active):
-                    t["event_id"] = self.log_event("trigger", t["id"], t["value"], {"demo": s["demo.enabled"]}, t["fired_at"])
+                    t["event_id"] = self.log_event("trigger", t["id"], t["value"], {"demo": s["demo.enabled"], "zen": self.zen.active},
+                                                   t["fired_at"])
+                    if self.zen.active and t["id"] not in ("heartbeat", "break_taken"):
+                        self.zen.held_back += 1
+                if self.zen.active:
+                    self.triggers.pending.clear()  # Zen: keep recording, never wake the agent
+                    continue
                 run = self.triggers.take(time.time(), self.agent.busy, s)
-                if run and s["agent.enabled"] and CLAUDE_CLI:
+                if run and s["agent.enabled"] and self.agent.available():
                     asyncio.create_task(self.agent.run(run))
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
@@ -193,8 +206,19 @@ class App:
                           (snap["ts"], json.dumps(snap), snap.get("app_category")))
             try:
                 self.typing_hist.append(S.seconds_since_key())
+                input_age = S.seconds_since_input()
             except Exception:  # noqa: BLE001 - Quartz unavailable
-                pass
+                input_age = None
+            if snap.get("calibrated") and not self.settings["tracking.paused"]:
+                change = self.zen.tick(time.time(), snap, input_age, self.active.get("category"),
+                                       self.settings["zen.enter_min"] * 60, self.settings["zen.enabled"])
+                if change:
+                    await self.zen_changed(*change)
+            if n % 30 == 1:
+                try:
+                    self.today = self.today_stats()
+                except Exception:  # noqa: BLE001
+                    traceback.print_exc()
             await self.send_status(force=True)
             if n % 2 == 0:
                 try:
@@ -264,6 +288,48 @@ class App:
             self.engine.set_cal(cal)
         self.db.save_baseline(cal, reason)
         return True, {k: cal[k] for k in ("ear_open", "squint_score", "blink_rate")}
+
+    # ---------- Zen mode ----------
+
+    async def zen_changed(self, change, info):
+        if change == "enter":
+            self.triggers.pending.clear()
+            for rid, fut in list(self.futures.items()):  # close any open nudge or question: Zen means invisible
+                if not fut.done():
+                    await self.send({"type": "ui_dismiss", "request_id": rid})
+                    fut.set_result(None)
+            self.log_event("zen", None, None, {"event": "zen_start", "source": info["source"]})
+        else:
+            self.log_event("zen", None, info["duration_s"], {"event": "zen_end", **info})
+            min_s = 60 if self.settings["demo.enabled"] else 300
+            if info["reason"] != "away" and info["duration_s"] >= min_s:
+                asyncio.create_task(self.zen_recap(info))
+        self.today = self.today_stats()
+        await self.send_status(force=True)
+
+    async def zen_recap(self, info):
+        base = self.engine.cal.get("blink_rate")
+        br = info.get("blink_rate")
+        rest = info["duration_s"] >= 1200 or (br is not None and base and br < 0.7 * base)
+        res = await self.ui_request("zen_recap", {**info, "baseline_blink_rate": base, "suggest_rest": bool(rest)}, 180)
+        self.log_event("system", None, None, {"event": "zen_recap", "result": res})
+
+    def today_stats(self):
+        d0 = dt.datetime.combine(dt.date.today(), dt.time()).timestamp()
+        ev = {r["kind"]: r["n"] for r in self.db.q("SELECT kind, COUNT(*) n FROM events WHERE ts >= ? AND seeded=0 GROUP BY kind", (d0,))}
+        zen = self.db.q("SELECT COALESCE(SUM(value), 0) s, COALESCE(MAX(value), 0) m FROM events "
+                        "WHERE kind='zen' AND value IS NOT NULL AND ts >= ? AND seeded=0", (d0,))[0]
+        actions = [n for n in T.CATALOG if T.CATALOG[n][2] == "action"]
+        nudges = self.db.q(f"SELECT COUNT(*) n FROM tool_calls WHERE ts >= ? AND status='done' AND seeded=0 "
+                           f"AND name IN ({','.join('?' * len(actions))})", (d0, *actions))[0]["n"]
+        avg = self.db.q("SELECT AVG(json_extract(data, '$.blink_rate')) b, AVG(json_extract(data, '$.eye_score')) e "
+                        "FROM metrics_1hz WHERE ts >= ? AND seeded=0", (d0,))[0]
+        cur = self.zen.state(time.time())["duration_s"]
+        return {"screen_time_s": self.snapshot.get("screen_time_today_s") or 0, "breaks": ev.get("break", 0),
+                "rubs": ev.get("rub", 0), "yawns": ev.get("yawn", 0), "nudges": nudges,
+                "zen_s": round(zen["s"] + cur), "longest_zen_s": round(max(zen["m"], cur)),
+                "avg_blink_rate": round(avg["b"], 1) if avg["b"] is not None else None,
+                "avg_eye_score": round(avg["e"]) if avg["e"] is not None else None}
 
     # ---------- calibration (§7) ----------
 
@@ -343,8 +409,10 @@ class App:
              "fps": self.snapshot.get("fps"), "agent_busy": self.agent.busy,
              "frame_w": self.frame.shape[1] if self.frame is not None else None,
              "frame_h": self.frame.shape[0] if self.frame is not None else None, "demo_mode": self.settings["demo.enabled"],
-             "agent_enabled": self.settings["agent.enabled"], "has_claude": bool(CLAUDE_CLI),
-             "has_tts_key": bool(os.environ.get("CARTESIA_API_KEY")), "active_app": self.active, "last_action": self.last_action}
+             "agent_enabled": self.settings["agent.enabled"], "agent_available": self.agent.available(),
+             "agent_provider": self.agent.provider(), "agent_clis": CLIS,
+             "has_tts_key": bool(os.environ.get("CARTESIA_API_KEY")), "active_app": self.active, "last_action": self.last_action,
+             "zen": self.zen.state(time.time()), "today": self.today}
         key = json.dumps(s, sort_keys=True, default=str)
         if force or key != self.last_status:
             self.last_status = key
@@ -500,8 +568,15 @@ class App:
                 await self.send({"type": "summary", "date": r[0]["date"], "text": r[0]["text"], "stats": json.loads(r[0]["stats"] or "{}")})
         elif name == "audio_control":
             self.speaker.control(args.get("action"))
+        elif name == "zen":
+            change = self.zen.set_manual(bool(args.get("on")), time.time())
+            if change:
+                await self.zen_changed(*change)
         elif name == "run_agent_now":
-            if not self.agent.busy:
+            if not self.agent.available():
+                await self.send({"type": "error", "code": "agent_unavailable",
+                                 "message": f"The {self.agent.provider()} CLI wasn't found. Install it or pick another provider in Settings."})
+            elif not self.agent.busy:
                 asyncio.create_task(self.agent.run([{"id": "manual", "value": None, "fired_at": time.time()}]))
         elif name == "check_shortcuts":
             ok, names = await asyncio.to_thread(S.focus_shortcuts_present)
@@ -526,7 +601,7 @@ class App:
             rows = self.db.q("SELECT ts, data, seeded FROM metrics_1hz WHERE ts >= ? AND ts < ? ORDER BY ts", (frm, to))
             step = max(1, len(rows) // limit)
             rows = [{"ts": r["ts"], **{k: v for k, v in json.loads(r["data"]).items()
-                                       if k in ("blink_rate", "perclos", "distance_cm", "squint_delta", "incomplete_pct")}}
+                                       if k in HISTORY_KEYS}}
                     for r in rows[::step]]
         elif kind == "events":
             rows = self.db.q("SELECT * FROM events WHERE ts >= ? AND ts < ? ORDER BY ts DESC LIMIT ?", (frm, to, limit))

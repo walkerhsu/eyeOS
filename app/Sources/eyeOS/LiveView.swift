@@ -8,34 +8,589 @@ private let faceOval = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 28
 private let lips = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185]
 private let fingertips = [4, 8, 12, 16, 20]
 
-struct LiveView: View {
-    @EnvironmentObject var store: Store
+// MARK: - shared styling
 
-    var body: some View {
-        GeometryReader { g in
-            HStack(spacing: 16) {
-                VStack(spacing: 12) {
-                    CameraView().frame(maxHeight: .infinity)
-                    DipTrace().frame(height: 120)
-                }
-                .frame(width: g.size.width * 0.58)
-                MetricGrid()
-            }
-            .padding(16)
-        }
-        .navigationTitle("Live")
+extension View {
+    /// The dashboard's card look: soft fill, hairline border, optional accent border when selected.
+    func card(padding: CGFloat = 16, accent: Color? = nil) -> some View {
+        self.padding(padding)
+            .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.045)))
+            .overlay(RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(accent?.opacity(0.7) ?? Color.white.opacity(0.08), lineWidth: accent == nil ? 1 : 1.5))
     }
 }
 
-struct CameraView: View {
+struct SectionTitle: View {
+    let text: String
+    let icon: String
+    var body: some View {
+        Label(text, systemImage: icon).font(.headline).foregroundStyle(.secondary)
+    }
+}
+
+struct Pill: View {
+    let text: String
+    var icon: String? = nil
+    var color: Color = .secondary
+    var spinning = false
+    var body: some View {
+        HStack(spacing: 5) {
+            if spinning { ProgressView().controlSize(.mini) } else if let icon { Image(systemName: icon) }
+            Text(text)
+        }
+        .font(.caption.weight(.medium))
+        .padding(.horizontal, 9).padding(.vertical, 4)
+        .background(color.opacity(0.16), in: Capsule())
+        .foregroundStyle(color == .secondary ? Color.primary.opacity(0.8) : color)
+    }
+}
+
+// MARK: - page
+
+struct LiveView: View {
+    @EnvironmentObject var store: Store
+    @AppStorage("live.metric") private var metric = "blink_rate"
+    @AppStorage("live.range") private var range = "10m"
+
+    var body: some View {
+        let camera = store.setting("ui.show_camera_image")
+        GeometryReader { geo in
+            // Fit everything in the window and let the timeline take the leftover height; scroll only when it's too short.
+            if geo.size.height >= (camera ? 720 : 700) {
+                content(camera: camera, fill: true, height: geo.size.height).frame(height: geo.size.height)
+            } else {
+                ScrollView { content(camera: camera, fill: false, height: geo.size.height) }
+            }
+        }
+    }
+
+    func content(camera: Bool, fill: Bool, height: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            AppBar(title: "Live") { cameraToggle }
+            if camera {
+                HStack(alignment: .top, spacing: 14) {
+                    VStack(spacing: 14) {
+                        CameraView(feed: store.feed).frame(maxHeight: fill ? max(200, height - 440) : 360)
+                        TimelineCard(metric: $metric, range: $range, fill: fill)
+                    }
+                    .frame(maxWidth: .infinity)
+                    VStack(spacing: 10) {
+                        ScoreSummary(ringSize: 64)
+                        TileGrid(columns: 2, selected: $metric)
+                        TodayStrip(columns: 3, compact: true)
+                    }
+                    .frame(width: 400)
+                }
+            } else {
+                HeroCard()
+                TileGrid(columns: 4, selected: $metric)
+                TimelineCard(metric: $metric, range: $range, fill: fill)
+            }
+        }
+        .padding(20)
+    }
+
+    var cameraToggle: some View {
+        Toggle(isOn: Binding(get: { store.setting("ui.show_camera_image") },
+                             set: { store.set("ui.show_camera_image", $0); if !$0 { store.feed.frame = nil } })) {
+            Label("Camera", systemImage: store.setting("ui.show_camera_image") ? "video.fill" : "video.slash")
+        }
+        .toggleStyle(.button)
+        .controlSize(.large)
+        .help("Show or hide what the camera sees")
+    }
+}
+
+struct ZenButton: View {
     @EnvironmentObject var store: Store
 
     var body: some View {
-        let m = store.metrics
+        if store.inZen {
+            Button { store.setZen(false) } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "moon.stars.fill")
+                    Text("Zen · \(duration(store.zen.num("duration_s")))")
+                    if let n = store.zen.int("held_back"), n > 0 { Text("· \(n) held").foregroundStyle(.white.opacity(0.7)) }
+                }
+                .font(.callout.weight(.semibold))
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(LinearGradient(colors: [.indigo, .purple], startPoint: .leading, endPoint: .trailing), in: Capsule())
+                .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .help(store.zen.str("source") == "manual" ? "You started Zen. Click to end it." : "Deep focus detected. Click to end Zen.")
+        } else {
+            Button { store.setZen(true) } label: { Label("Zen", systemImage: "moon.stars") }
+                .controlSize(.large)
+                .help("Start Zen now: eyeOS keeps measuring but stays completely silent")
+        }
+    }
+}
+
+// MARK: - score
+
+func scoreLabel(_ s: Double?) -> String {
+    guard let s else { return "Waiting for your face" }
+    return s >= 80 ? "Eyes relaxed" : s >= 60 ? "Mild strain" : s >= 40 ? "Eyes working hard" : "Time to rest"
+}
+
+/// The biggest single reason the score is down, in plain words.
+func topIssue(_ m: J) -> String {
+    if !m.bool("face_present") { return "Sit in front of the camera to start measuring." }
+    if !m.bool("calibrated") { return "Calibrate once so eyeOS knows your normal." }
+    if (m.num("perclos") ?? 0) > 0.15 { return "Your eyes are closing a lot. Signs of tiredness." }
+    if (m.num("blink_rate") ?? 99) < 8 { return "You're blinking much less than usual." }
+    if (m.num("since_real_break_s") ?? 0) > 1800 { return "No real break for \(duration(m.num("since_real_break_s")))." }
+    if (m.num("incomplete_pct") ?? 0) > 0.4 { return "Many blinks aren't closing fully." }
+    if (m.num("current_stare_s") ?? 0) > 15 { return "Long stare. Your eyes haven't blinked in a while." }
+    if m.bool("squinting") { return "You're squinting at the screen." }
+    if let d = m.num("distance_cm"), d < 40 { return "You're sitting close to the screen." }
+    return "Everything looks comfortable."
+}
+
+struct ScoreRing: View {
+    let score: Double?
+    var size: CGFloat = 120
+
+    var body: some View {
+        let s = score ?? 0
+        let color: Color = score == nil ? .secondary : s >= 80 ? .mint : s >= 60 ? .yellow : s >= 40 ? .orange : .pink
+        ZStack {
+            Circle().stroke(Color.white.opacity(0.08), lineWidth: size * 0.09)
+            Circle().trim(from: 0, to: s / 100)
+                .stroke(LinearGradient(colors: [color.opacity(0.7), color], startPoint: .bottom, endPoint: .top),
+                        style: StrokeStyle(lineWidth: size * 0.09, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            VStack(spacing: 0) {
+                Text(score.map { "\(Int($0))" } ?? "–").font(.system(size: size * 0.32, weight: .bold, design: .rounded)).monospacedDigit()
+                if size >= 100 { Text("eye score").font(.caption).foregroundStyle(.secondary) }
+            }
+        }
+        .frame(width: size, height: size)
+        .animation(.easeInOut(duration: 0.6), value: score)
+    }
+}
+
+struct ScoreSummary: View {
+    @EnvironmentObject var store: Store
+    var ringSize: CGFloat = 76
+
+    var body: some View {
+        let score = store.metrics.num("eye_score")
+        HStack(spacing: 14) {
+            ScoreRing(score: score, size: ringSize)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Eye score").font(.caption).foregroundStyle(.secondary)
+                Text(scoreLabel(score)).font(.title3.bold())
+                Text(topIssue(store.metrics)).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .card(padding: 14)
+        .explain(Explain.eyeScore)
+    }
+}
+
+struct HeroCard: View {
+    @EnvironmentObject var store: Store
+
+    var body: some View {
+        let score = store.metrics.num("eye_score")
+        HStack(alignment: .center, spacing: 24) {
+            ScoreRing(score: score, size: 120).explain(Explain.eyeScore)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(scoreLabel(score)).font(.system(size: 24, weight: .bold))
+                Text(topIssue(store.metrics)).font(.title3).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if store.inZen {
+                    Label("In Zen for \(duration(store.zen.num("duration_s"))). eyeOS is staying silent.", systemImage: "moon.stars.fill")
+                        .foregroundStyle(.indigo)
+                }
+            }
+            .frame(maxWidth: 320, alignment: .leading)
+            Spacer(minLength: 12)
+            Divider().frame(height: 100)
+            TodayStrip(columns: 3, bare: true).frame(maxWidth: 420)
+        }
+        .card(padding: 18)
+    }
+}
+
+// MARK: - today
+
+struct TodayStrip: View {
+    @EnvironmentObject var store: Store
+    var columns = 3
+    var bare = false
+    var compact = false
+
+    var body: some View {
+        let t = store.today
+        let items: [(String, String, String, Color, Explainer)] = [
+            ("display", duration(t.num("screen_time_s") ?? store.metrics.num("screen_time_today_s")), "Screen time", .blue, Explain.screenTime),
+            ("cup.and.saucer.fill", "\(t.int("breaks") ?? 0)", "Real breaks", .green, Explain.breaks),
+            ("moon.stars.fill", duration(t.num("zen_s")), "In Zen", .indigo, Explain.zenTime),
+            ("eye.fill", fmt(t.num("avg_blink_rate"), 1), "Avg blinks/min", .teal, Explain.avgBlinks),
+            ("sparkles", "\(t.int("nudges") ?? 0)", "Nudges", .purple, Explain.nudges),
+            ("hand.raised.fill", "\(t.int("rubs") ?? 0)", "Eye rubs", .orange, Explain.rubs),
+        ]
+        let content = VStack(alignment: .leading, spacing: compact ? 10 : 12) {
+            if compact {
+                Label("Today", systemImage: "calendar").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            } else {
+                SectionTitle(text: "Today", icon: "calendar")
+            }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12, alignment: .leading), count: columns),
+                      alignment: .leading, spacing: compact ? 10 : 14) {
+                ForEach(items, id: \.2) { icon, value, label, color, explainer in
+                    HStack(spacing: compact ? 8 : 10) {
+                        Image(systemName: icon).font(.system(size: compact ? 11 : 13, weight: .semibold)).foregroundStyle(color)
+                            .frame(width: compact ? 24 : 28, height: compact ? 24 : 28)
+                            .background(color.opacity(0.15), in: RoundedRectangle(cornerRadius: 7))
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(value).font(.system(compact ? .callout : .body, design: .rounded).weight(.semibold)).monospacedDigit()
+                            Text(label).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                    .explain(explainer)
+                }
+            }
+        }
+        if bare { content } else { content.card(padding: compact ? 12 : 16) }
+    }
+}
+
+// MARK: - tiles
+
+struct StatTile: View {
+    let def: MetricDef
+    var title: String? = nil
+    let value: String
+    var unit: String = ""
+    let detail: String
+    let level: Level
+    var progress: Double? = nil
+    let selected: Bool
+    var explainer: Explainer? = nil
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Image(systemName: def.icon).font(.system(size: 12, weight: .semibold)).foregroundStyle(def.color)
+                        .frame(width: 24, height: 24).background(def.color.opacity(0.16), in: RoundedRectangle(cornerRadius: 7))
+                    Text(title ?? def.title).font(.subheadline.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
+                    Spacer(minLength: 4)
+                    Circle().fill(level.color).frame(width: 7, height: 7)
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text(value).font(.system(size: 23, weight: .semibold, design: .rounded)).monospacedDigit()
+                        .lineLimit(1).minimumScaleFactor(0.6)
+                    if !unit.isEmpty { Text(unit).font(.callout).foregroundStyle(.secondary) }
+                }
+                if let progress {
+                    ProgressView(value: min(1, max(0, progress))).tint(level.color).controlSize(.small)
+                }
+                Text(detail).font(.caption).foregroundStyle(.tertiary).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, minHeight: 78, alignment: .topLeading)
+            .contentShape(Rectangle())
+            .card(padding: 12, accent: selected ? def.color : nil)
+        }
+        .buttonStyle(.plain)
+        .explain(explainer.map { Explainer(title: $0.title, meaning: $0.meaning, math: $0.math, good: $0.good,
+                                           source: [$0.source, "Click the card to plot it on the timeline."].compactMap { $0 }.joined(separator: " ")) }
+                 ?? Explainer(title: def.title, meaning: "Click to plot \(def.title.lowercased()) on the timeline."))
+    }
+}
+
+struct TileGrid: View {
+    @EnvironmentObject var store: Store
+    let columns: Int
+    @Binding var selected: String
+
+    static let explainers: [String: Explainer] = [
+        "blink_rate": Explain.blinkRate, "incomplete_pct": Explain.incomplete, "current_stare_s": Explain.stare,
+        "perclos": Explain.drowsiness, "distance_cm": Explain.distance, "squint_delta": Explain.squint,
+        "since_real_break_s": Explain.lastBreak, "gaze_on_screen": Explain.focus,
+    ]
+
+    func tile(_ id: String, title: String? = nil, value: String, unit: String = "", detail: String, level: Level,
+              progress: Double? = nil) -> StatTile {
+        StatTile(def: .get(id), title: title, value: value, unit: unit, detail: detail, level: level, progress: progress,
+                 selected: selected == id, explainer: Self.explainers[id]) { selected = id }
+    }
+
+    var body: some View {
+        let m = store.metrics, b = store.baseline
+        let br = m.num("blink_rate"), since = m.num("since_real_break_s") ?? 0
+        let squintS = m.num("squint_s") ?? 0
+        let recent = store.series.suffix(60)
+        let onScreen = recent.isEmpty ? nil : Double(recent.filter { ($0.values["gaze_on_screen"] ?? 0) > 0.5 }.count) / Double(recent.count) * 100
+        let nextBreak = 1200 - since
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: columns), spacing: 10) {
+            tile("blink_rate", value: fmt(br, 1), unit: "/min",
+                 detail: b.num("blink_rate").map { "Your normal: \(fmt($0, 0))/min" } ?? "Healthy: 12–20/min",
+                 level: levelHigh(br, good: 12, warn: 8))
+            tile("incomplete_pct", value: fmt(m.num("incomplete_pct").map { $0 * 100 }, 0), unit: "%",
+                 detail: "Blinks that don't fully close", level: levelLow(m.num("incomplete_pct").map { $0 * 100 }, good: 25, warn: 40))
+            tile("current_stare_s", value: fmt(m.num("current_stare_s"), 0), unit: "s",
+                 detail: "Longest: \(fmt(m.num("longest_stare_s"), 0)) s", level: levelLow(m.num("current_stare_s"), good: 10, warn: 20))
+            tile("perclos", value: fmt(m.num("perclos").map { $0 * 100 }, 1), unit: "%",
+                 detail: "Time eyes are mostly closed", level: levelLow(m.num("perclos").map { $0 * 100 }, good: 8, warn: 15))
+            tile("distance_cm", value: fmt(m.num("distance_cm"), 0) + (m.bool("distance_stale") ? "*" : ""), unit: "cm",
+                 detail: b.num("distance_cm").map { "Calibrated at \(fmt($0, 0)) cm" } ?? "Aim for 50–70 cm",
+                 level: levelHigh(m.num("distance_cm"), good: 50, warn: 40))
+            tile("squint_delta", value: m.bool("squinting") ? "\(Int(squintS))" : "Relaxed", unit: m.bool("squinting") ? "s" : "",
+                 detail: m.bool("squinting") ? "Squinting now" : "Lid tension \(fmt(m.num("squint_delta"), 2))",
+                 level: !m.bool("squinting") ? .good : squintS < 30 ? .warn : .bad)
+            tile("since_real_break_s", title: "Last break", value: duration(since), unit: "ago",
+                 detail: nextBreak > 0 ? "20-20-20 break in \(duration(nextBreak))" : "Break overdue by \(duration(-nextBreak))",
+                 level: since < 1200 ? .good : since <= 2400 ? .warn : .bad, progress: since / 1200)
+            tile("gaze_on_screen", title: store.inZen ? "Zen focus" : "Focus",
+                 value: duration(store.inZen ? store.zen.num("duration_s") : m.num("session_s")),
+                 detail: "Eyes on screen \(fmt(onScreen, 0))% (last min)", level: .none)
+        }
+    }
+}
+
+// MARK: - timeline
+
+struct TimelineCard: View {
+    @EnvironmentObject var store: Store
+    @Binding var metric: String
+    @Binding var range: String
+    var fill = false
+    private let ranges: [(String, Double)] = [("1m", 60), ("10m", 600), ("1h", 3600), ("Today", 0)]
+
+    struct Point: Identifiable {
+        let id: Int
+        let t: Date
+        let v: Double
+        let seg: Int
+    }
+
+    var body: some View {
+        let def = MetricDef.get(metric)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                SectionTitle(text: "Timeline", icon: "chart.xyaxis.line")
+                Picker("Metric", selection: $metric) {
+                    ForEach(MetricDef.all) { d in Label(d.title, systemImage: d.icon).tag(d.id) }
+                }
+                .labelsHidden().frame(width: 190)
+                Spacer(minLength: 8)
+                Picker("Range", selection: $range) {
+                    ForEach(ranges, id: \.0) { Text($0.0).tag($0.0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 210)
+                .disabled(metric == "openness")
+            }
+            if metric == "openness" {
+                OpennessChart(feed: store.feed).frame(minHeight: fill ? 110 : 210, maxHeight: fill ? .infinity : 210)
+                Text("Live eye openness for the last 60 s. Red dots are full blinks, orange are half blinks, purple are long blinks.")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            } else {
+                chart(def).frame(minHeight: fill ? 110 : 210, maxHeight: fill ? .infinity : 210)
+                statsRow(def)
+            }
+        }
+        .card(padding: 14)
+        .task(id: range) {
+            guard range == "Today" else { return }
+            while !Task.isCancelled {
+                store.loadTimelineDay()
+                try? await Task.sleep(for: .seconds(60))
+            }
+        }
+    }
+
+    func legend(color: Color, text: String, dashed: Bool = false) -> some View {
+        HStack(spacing: 5) {
+            if dashed {
+                Rectangle().fill(color).frame(width: 12, height: 2)
+            } else {
+                RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 10, height: 10)
+            }
+            Text(text).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// Raw (ts, value, zen) rows for the selected range, oldest first.
+    func rows(_ def: MetricDef) -> (rows: [(Double, Double, Bool)], from: Double, to: Double) {
+        let now = Date().timeIntervalSince1970
+        if range == "Today" {
+            let r: [(Double, Double, Bool)] = store.dayTimeline.compactMap { row in
+                guard let ts = row.num("ts") else { return nil }
+                let v = row.num(def.id) ?? ((row[def.id] as? Bool).map { $0 ? 1 : 0 })
+                guard let v else { return nil }
+                return (ts, v, row.bool("zen"))
+            }
+            return (r, Calendar.current.startOfDay(for: Date()).timeIntervalSince1970, now)
+        }
+        let span = ranges.first { $0.0 == range }?.1 ?? 600
+        let r = store.series.filter { $0.ts >= now - span }.compactMap { s in s.values[def.id].map { (s.ts, $0, s.zen) } }
+        return (r, now - span, now)
+    }
+
+    /// Averages rows into at most ~240 buckets; a gap of no data starts a new line segment.
+    func points(_ def: MetricDef) -> (pts: [Point], zen: [(Date, Date)], from: Date, to: Date) {
+        let (raw, from, to) = rows(def)
+        let width = max(1, (to - from) / 240)
+        var pts: [Point] = [], zen: [(Date, Date)] = []
+        var seg = 0, lastT: Double?
+        var bucket: [(Double, Double, Bool)] = [], bucketIdx: Int?
+        func flush() {
+            guard let first = bucket.first else { return }
+            let mean = bucket.map(\.1).reduce(0, +) / Double(bucket.count)
+            let t = first.0
+            if let lastT, t - lastT > width * 3 + 5 { seg += 1 }
+            pts.append(Point(id: pts.count, t: Date(timeIntervalSince1970: t), v: mean * def.scale, seg: seg))
+            if bucket.contains(where: \.2) {
+                let s = Date(timeIntervalSince1970: t), e = Date(timeIntervalSince1970: t + width)
+                if let last = zen.last, s.timeIntervalSince(last.1) < width * 2 { zen[zen.count - 1].1 = e } else { zen.append((s, e)) }
+            }
+            lastT = t
+            bucket = []
+        }
+        for r in raw {
+            let i = Int((r.0 - from) / width)
+            if i != bucketIdx { flush(); bucketIdx = i }
+            bucket.append(r)
+        }
+        flush()
+        return (pts, zen, Date(timeIntervalSince1970: from), Date(timeIntervalSince1970: to))
+    }
+
+    func baseline(_ def: MetricDef) -> Double? {
+        def.baselineKey.flatMap { store.baseline.num($0) }.map { $0 * def.scale }
+    }
+
+    @ViewBuilder func chart(_ def: MetricDef) -> some View {
+        let p = points(def)
+        let base = baseline(def)
+        let top = max(p.pts.map(\.v).max() ?? 1, (def.limit ?? 0) * 1.15, (base ?? 0) * 1.15, 1) * 1.1
+        let yDomain = def.domain ?? 0...top
+        let gradient = LinearGradient(colors: [def.color.opacity(0.35), def.color.opacity(0.02)], startPoint: .top, endPoint: .bottom)
+        Chart {
+            ForEach(Array(p.zen.enumerated()), id: \.offset) { _, z in
+                RectangleMark(xStart: .value("start", z.0), xEnd: .value("end", z.1))
+                    .foregroundStyle(Color.indigo.opacity(0.18))
+            }
+            ForEach(p.pts) { pt in
+                AreaMark(x: .value("time", pt.t), y: .value(def.title, pt.v), series: .value("segment", pt.seg))
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(gradient)
+                LineMark(x: .value("time", pt.t), y: .value(def.title, pt.v), series: .value("segment", pt.seg))
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(def.color)
+                    .lineStyle(StrokeStyle(lineWidth: 2))
+            }
+            if let base {
+                RuleMark(y: .value("baseline", base))
+                    .foregroundStyle(Color.white.opacity(0.5)).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+            }
+            if let l = def.limit {
+                RuleMark(y: .value("limit", l))
+                    .foregroundStyle(Color.pink.opacity(0.7)).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+            }
+        }
+        .chartXScale(domain: p.from...p.to)
+        .chartYScale(domain: yDomain)
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 6)) { _ in
+                AxisGridLine().foregroundStyle(Color.white.opacity(0.06))
+                AxisValueLabel(format: range == "1m" ? .dateTime.hour().minute().second() : .dateTime.hour().minute())
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in
+                AxisGridLine().foregroundStyle(Color.white.opacity(0.06))
+                AxisValueLabel()
+            }
+        }
+        .overlay {
+            if p.pts.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: "chart.line.uptrend.xyaxis").font(.title2)
+                    Text(range == "Today" ? "No data recorded today yet." : "Collecting data. The timeline fills in as eyeOS watches.")
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    func statsRow(_ def: MetricDef) -> some View {
+        let vals = rows(def).rows.map { $0.1 * def.scale }
+        let now = store.metrics.num(def.id).map { $0 * def.scale } ?? ((store.metrics[def.id] as? Bool).map { $0 ? 100 : 0 })
+        let avg = vals.isEmpty ? nil : vals.reduce(0, +) / Double(vals.count)
+        let items: [(String, Double?)] = [("Now", now), ("Average", avg), ("Low", vals.min()), ("High", vals.max())]
+        return HStack(spacing: 22) {
+            ForEach(items, id: \.0) { label, v in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label).font(.caption).foregroundStyle(.secondary)
+                    Text(fmt(v, def.digits, suffix: def.unit.isEmpty ? "" : " \(def.unit)"))
+                        .font(.system(.body, design: .rounded).weight(.semibold)).monospacedDigit()
+                }
+            }
+            if let base = baseline(def) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Baseline").font(.caption).foregroundStyle(.secondary)
+                    Text(fmt(base, def.digits, suffix: def.unit.isEmpty ? "" : " \(def.unit)"))
+                        .font(.system(.body, design: .rounded).weight(.semibold)).monospacedDigit()
+                }
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 4) {
+                legend(color: .indigo.opacity(0.5), text: "Zen")
+                if def.limit != nil { legend(color: .pink, text: "Watch line", dashed: true) }
+                if def.baselineKey != nil { legend(color: .white.opacity(0.6), text: "Baseline", dashed: true) }
+            }
+        }
+        .contentShape(Rectangle())
+        .explain(Explain.stats(def, range: range))
+    }
+}
+
+/// The live openness trace with blink / incomplete markers (key demo visual for incomplete blinks).
+struct OpennessChart: View {
+    @ObservedObject var feed: LiveFeed
+
+    var body: some View {
+        let now = feed.trace.last?.ts ?? Date().timeIntervalSince1970
+        Chart {
+            RuleMark(y: .value("complete", 0.2)).foregroundStyle(Color.pink.opacity(0.35)).lineStyle(StrokeStyle(dash: [3]))
+            RuleMark(y: .value("incomplete", 0.6)).foregroundStyle(Color.orange.opacity(0.35)).lineStyle(StrokeStyle(dash: [3]))
+            ForEach(Array(feed.trace.enumerated()), id: \.offset) { _, s in
+                LineMark(x: .value("t", s.ts - now), y: .value("openness", s.o))
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(Color.cyan)
+            }
+            ForEach(Array(feed.dipMarks.enumerated()), id: \.offset) { _, d in
+                PointMark(x: .value("t", d.ts - now), y: .value("openness", d.o))
+                    .foregroundStyle(d.kind == "incomplete" ? Color.orange : d.kind == "long_blink" ? Color.purple : Color.pink)
+                    .symbolSize(50)
+            }
+        }
+        .chartXScale(domain: -60...0)
+        .chartYScale(domain: 0...1.2)
+        .chartXAxisLabel("seconds ago")
+    }
+}
+
+// MARK: - camera
+
+struct CameraView: View {
+    @EnvironmentObject var store: Store
+    @ObservedObject var feed: LiveFeed
+
+    var body: some View {
         ZStack(alignment: .topLeading) {
             ZStack {
                 Color(white: 0.06)
-                if store.setting("ui.show_camera_image"), let img = store.frame {
+                if let img = feed.frame {
                     Image(nsImage: img).resizable()
                 }
                 Canvas { ctx, size in draw(ctx, size) }
@@ -44,30 +599,19 @@ struct CameraView: View {
             .clipped()
 
             HStack(spacing: 6) {
-                badge("\(fmt(store.status.num("fps"), 0)) fps", .secondary)
-                if !(store.status["camera_ok"] as? Bool ?? false) { badge("camera off", .red) }
-                if !m.bool("face_present") { badge("face lost", .orange) }
-                if !m.bool("calibrated") { badge("uncalibrated", .yellow) }
-                if store.setting("tracking.paused") { badge("paused", .gray) }
-                Spacer()
-                Toggle("Show camera image", isOn: Binding(get: { store.setting("ui.show_camera_image") },
-                                                          set: { store.set("ui.show_camera_image", $0); if !$0 { store.frame = nil } }))
-                    .toggleStyle(.switch).controlSize(.small)
+                if store.metrics.bool("rubbing") { Pill(text: "Eye rub", icon: "hand.raised.fill", color: .pink) }
+                if store.metrics.bool("squinting") { Pill(text: "Squinting", icon: "sun.max.fill", color: .orange) }
             }
             .padding(10)
         }
         // the container takes the camera's own aspect so the image and the normalized landmarks line up
         .aspectRatio((store.status.num("frame_w") ?? 16) / (store.status.num("frame_h") ?? 9), contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-
-    func badge(_ t: String, _ c: Color) -> some View {
-        Text(t).font(.caption2.weight(.semibold)).padding(.horizontal, 6).padding(.vertical, 3)
-            .background(c.opacity(0.25), in: Capsule()).foregroundStyle(c == .secondary ? .white : c)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.08)))
     }
 
     func draw(_ ctx: GraphicsContext, _ size: CGSize) {
-        guard let lm = store.landmarks else { return }
+        guard let lm = feed.landmarks else { return }
         func pt(_ p: [Double]) -> CGPoint { CGPoint(x: p[0] * size.width, y: p[1] * size.height) }
         if let face = lm["face"] as? [[Double]], face.count >= 478 {
             for (i, p) in face.enumerated() where i % 3 == 0 {
@@ -79,7 +623,7 @@ struct CameraView: View {
                 path.closeSubpath()
                 ctx.stroke(path, with: .color(color), lineWidth: width)
             }
-            let o = store.landmarks?.num("o") ?? 1
+            let o = lm.num("o") ?? 1
             let eyeColor = Color(hue: 0.33 * min(1, max(0, (o - 0.2) / 0.7)), saturation: 0.9, brightness: 0.95)
             contour(faceOval, .white.opacity(0.25))
             contour(lips, .white.opacity(0.3))
@@ -116,93 +660,5 @@ struct CameraView: View {
                          with: .color(store.metrics.bool("rubbing") ? .red : .yellow))
             }
         }
-    }
-}
-
-struct MetricCard: View {
-    let title: String
-    let value: String
-    var baseline: String? = nil
-    let level: Level
-    var spinner = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Circle().fill(level.color).frame(width: 8, height: 8)
-                Text(title).font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                if spinner { ProgressView().controlSize(.small) }
-            }
-            Text(value).font(.system(size: 26, weight: .semibold, design: .rounded).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.5)
-            Text(baseline.map { "baseline \($0)" } ?? " ").font(.caption2).foregroundStyle(.tertiary)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(white: 0.5, opacity: 0.08), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(level.color.opacity(0.35)))
-    }
-}
-
-struct MetricGrid: View {
-    @EnvironmentObject var store: Store
-
-    var body: some View {
-        let m = store.metrics, b = store.baseline
-        let sessionMin = (m.num("since_real_break_s") ?? 0) / 60
-        let squintS = m.num("squint_s") ?? 0
-        let acted = store.lastActed.flatMap { Date().timeIntervalSince($0.ts) < 10 ? $0.name : nil }
-        ScrollView {
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                MetricCard(title: "Blink rate /min", value: fmt(m.num("blink_rate"), 1), baseline: b.num("blink_rate").map { fmt($0, 1) },
-                           level: levelHigh(m.num("blink_rate"), good: 12, warn: 8))
-                MetricCard(title: "Stare now · longest", value: "\(fmt(m.num("current_stare_s"), 0))s · \(fmt(m.num("longest_stare_s"), 0))s",
-                           level: levelLow(max(m.num("current_stare_s") ?? 0, m.num("longest_stare_s") ?? 0), good: 10, warn: 20))
-                MetricCard(title: "Incomplete blinks", value: fmt(m.num("incomplete_pct").map { $0 * 100 }, 0, suffix: "%"),
-                           level: levelLow(m.num("incomplete_pct").map { $0 * 100 }, good: 25, warn: 40))
-                MetricCard(title: "PERCLOS", value: fmt(m.num("perclos").map { $0 * 100 }, 1, suffix: "%"),
-                           level: levelLow(m.num("perclos").map { $0 * 100 }, good: 8, warn: 15))
-                MetricCard(title: "Distance", value: fmt(m.num("distance_cm"), 0, suffix: " cm") + (m.bool("distance_stale") ? "*" : ""),
-                           baseline: b.num("distance_cm").map { fmt($0, 0, suffix: " cm") },
-                           level: levelHigh(m.num("distance_cm"), good: 50, warn: 40))
-                MetricCard(title: "Squint", value: m.bool("squinting") ? "squinting \(Int(squintS))s" : "relaxed",
-                           baseline: "Δ \(fmt(m.num("squint_delta"), 2))",
-                           level: !m.bool("squinting") ? .good : squintS < 30 ? .warn : .bad)
-                MetricCard(title: "Session · since break",
-                           value: "\(Int((m.num("session_s") ?? 0) / 60))m · \(Int(sessionMin))m",
-                           level: sessionMin < 20 ? .good : sessionMin <= 40 ? .warn : .bad)
-                MetricCard(title: "Agent", value: (store.status["agent_busy"] as? Bool ?? false) ? "thinking…" : acted ?? "idle",
-                           level: .none, spinner: store.status["agent_busy"] as? Bool ?? false)
-            }
-        }
-    }
-}
-
-/// The live openness trace with blink / incomplete markers (key demo visual for incomplete blinks).
-struct DipTrace: View {
-    @EnvironmentObject var store: Store
-
-    var body: some View {
-        let now = store.trace.last?.ts ?? Date().timeIntervalSince1970
-        Chart {
-            ForEach(Array(store.trace.enumerated()), id: \.offset) { _, s in
-                LineMark(x: .value("t", s.ts - now), y: .value("o", s.o)).interpolationMethod(.monotone)
-                    .foregroundStyle(.teal)
-            }
-            RuleMark(y: .value("complete", 0.2)).foregroundStyle(.red.opacity(0.3)).lineStyle(.init(dash: [3]))
-            RuleMark(y: .value("incomplete", 0.6)).foregroundStyle(.orange.opacity(0.3)).lineStyle(.init(dash: [3]))
-            ForEach(Array(store.dipMarks.enumerated()), id: \.offset) { _, d in
-                PointMark(x: .value("t", d.ts - now), y: .value("o", d.o))
-                    .foregroundStyle(d.kind == "incomplete" ? .orange : d.kind == "long_blink" ? .purple : .red)
-                    .symbolSize(60)
-                    .annotation(position: .bottom) { Text(d.kind == "incomplete" ? "half" : d.kind == "long_blink" ? "long" : "")
-                        .font(.caption2).foregroundStyle(.orange) }
-            }
-        }
-        .chartXScale(domain: -10...0)
-        .chartYScale(domain: 0...1.2)
-        .chartXAxisLabel("seconds")
-        .padding(10)
-        .background(Color(white: 0.5, opacity: 0.08), in: RoundedRectangle(cornerRadius: 12))
     }
 }

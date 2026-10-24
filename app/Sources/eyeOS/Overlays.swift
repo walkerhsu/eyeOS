@@ -74,6 +74,10 @@ final class Overlays {
                 self?.store.sidecar.command("audio_control", ["action": action])
                 if action == "stop" { self?.dismiss(rid) }
             }), size: .init(width: 360, height: 56), at: .bottomCenter)
+        case "zen_recap":
+            present(rid, AnyView(ZenRecapCard(payload: p) { [weak self] action in
+                self?.respond(rid, ["action": action])
+            }), at: .banner)
         case "doctor_card":
             present(rid, AnyView(DoctorCard(message: p.str("message") ?? "") { [weak self] in
                 self?.respond(rid, ["dismissed": true])
@@ -239,6 +243,58 @@ struct EdgePulse: View {
                 try? await Task.sleep(for: .milliseconds(600))
                 withAnimation(.easeInOut(duration: 0.6)) { on = false }
                 try? await Task.sleep(for: .milliseconds(600))
+            }
+        }
+    }
+}
+
+/// Shown once when a Zen session ends: what happened while eyeOS stayed silent, plus an optional 20 s rest.
+struct ZenRecapCard: View {
+    let payload: J
+    let done: (String) -> Void
+    @StateVar private var resting = false
+    @StateVar private var left: Double = 20
+
+    var body: some View {
+        let mins = max(1, (payload.int("duration_s") ?? 0) / 60)
+        Card(title: resting ? "Look at something far away" : "Nice focus · \(mins) min in Zen", icon: "moon.stars.fill") {
+            if resting {
+                HStack {
+                    ZStack {
+                        Circle().stroke(.secondary.opacity(0.3), lineWidth: 3)
+                        Circle().trim(from: 0, to: left / 20).stroke(.indigo, style: .init(lineWidth: 3, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                        Text("\(Int(left.rounded(.up)))").font(.caption2.monospacedDigit())
+                    }.frame(width: 26, height: 26)
+                    Text("Let your eyes relax.").foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Done") { done("rested") }.controlSize(.small)
+                }
+                .task {
+                    while left > 0 {
+                        try? await Task.sleep(for: .milliseconds(100))
+                        left = max(0, left - 0.1)
+                    }
+                    done("rested")
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 3) {
+                    if let br = payload.num("blink_rate") {
+                        let base = payload.num("baseline_blink_rate")
+                        Text("Blink rate \(fmt(br, 0))/min" + (base.map { " (your normal \(fmt($0, 0)))" } ?? ""))
+                    }
+                    if let n = payload.int("held_back"), n > 0 { Text("\(n) nudge\(n == 1 ? "" : "s") held back so you could focus") }
+                }
+                .foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    if payload.bool("suggest_rest") {
+                        Button("Later") { done("later") }.controlSize(.small)
+                        Button("Rest eyes 20 s") { resting = true }.controlSize(.small).buttonStyle(.borderedProminent)
+                    } else {
+                        Button("OK") { done("ok") }.controlSize(.small)
+                    }
+                }
             }
         }
     }

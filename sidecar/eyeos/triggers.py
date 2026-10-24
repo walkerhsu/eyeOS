@@ -22,14 +22,14 @@ class Triggers:
         if not active:
             self.since.clear()
             return fired
-        cooldown = 20 if s["demo.enabled"] else s["agent.trigger_cooldown_s"]
+        cooldown = 45 if s["demo.enabled"] else s["agent.trigger_cooldown_s"]
         kinds = {e["kind"] for e in events}
         for tid in TRIGGERS:
             if not s[f"triggers.{tid}.enabled"]:
                 continue
             thr, sus = self.params(tid, s)
             if tid == "heartbeat":
-                thr = 60 if s["demo.enabled"] else s["agent.heartbeat_s"]
+                thr = 180 if s["demo.enabled"] else s["agent.heartbeat_s"]
             cond, value = self._cond(tid, snap, kinds, thr, now)
             if not cond:
                 self.since.pop(tid, None)
@@ -81,8 +81,8 @@ class Triggers:
         """Pop the merged trigger list if a run may start now, else None."""
         if busy or not self.pending:
             return None
-        gap = 15 if s["demo.enabled"] else s["agent.global_gap_s"]
-        hb = 60 if s["demo.enabled"] else 300
+        gap = 30 if s["demo.enabled"] else s["agent.global_gap_s"]
+        hb = 180 if s["demo.enabled"] else s["agent.heartbeat_s"]
         ids = set(self.pending)
         if ids == {"heartbeat"} and now - self.last_event_run < hb:
             self.pending.clear()  # heartbeat skipped: another trigger ran recently

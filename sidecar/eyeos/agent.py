@@ -7,6 +7,7 @@ import statistics
 import time
 import traceback
 
+import glob
 import os
 import shutil
 from pathlib import Path
@@ -14,6 +15,7 @@ from pathlib import Path
 import claude_agent_sdk as sdk
 
 from . import tools as T
+from .codex import Codex
 from .metrics import verdict
 from .tools import system as S
 from .tts import page_text, selection_text, chunks
@@ -66,10 +68,22 @@ DOCTOR_TEXT = ("Over the past week your eyes have shown signs often linked to ey
                "eyeOS can't diagnose anything, but it might be worth mentioning to an eye doctor or optometrist.")
 
 
-# The app's PATH is minimal, so look in the usual install spots too. Uses the user's `claude` login,
-# or ANTHROPIC_API_KEY when set.
-CLAUDE_CLI = shutil.which("claude", path=os.environ.get("PATH", "") + os.pathsep + os.pathsep.join(
-    str(Path(p).expanduser()) for p in ("~/.local/bin", "~/.claude/local", "/opt/homebrew/bin", "/usr/local/bin")))
+def _find(name):
+    """The app's PATH is minimal, so look in the usual install spots too (incl. nvm / volta / bun)."""
+    dirs = [os.environ.get("PATH", ""), *(str(Path(p).expanduser()) for p in (
+        "~/.local/bin", "~/.claude/local", "~/.npm-global/bin", "~/.volta/bin", "~/.bun/bin", "/opt/homebrew/bin", "/usr/local/bin"))]
+    dirs += sorted(glob.glob(str(Path("~/.nvm/versions/node/*/bin").expanduser())), reverse=True)
+    return shutil.which(name, path=os.pathsep.join(dirs))
+
+
+def _bundled_claude():
+    """claude-agent-sdk ships a native `claude` matching its own version; it needs no node on PATH."""
+    p = Path(sdk.__file__).parent / "_bundled" / "claude"
+    return str(p) if p.is_file() and os.access(p, os.X_OK) else None
+
+
+# Both use the user's own CLI login (`claude` login / ANTHROPIC_API_KEY; `codex login`).
+CLIS = {"claude": _bundled_claude() or _find("claude"), "codex": _find("codex")}
 
 
 def _now_ctx():
@@ -85,6 +99,13 @@ class Agent:
         self.pending_suggestions = []  # {call_id, tool, ts}
         self.state = {"focus_on": False, "increase_contrast": False}
         self.run_text = {}  # run_id -> latest rationale, shown as the approval reason
+        self.codex = Codex(CLIS["codex"])
+
+    def provider(self):
+        return self.app.settings.get("agent.provider", "claude")
+
+    def available(self):
+        return bool(CLIS.get(self.provider()))
 
     # ---------- run ----------
 
@@ -100,8 +121,9 @@ class Agent:
                 db.x("UPDATE events SET run_id=? WHERE id=?", (run_id, tr["event_id"]))
         await app.send({"type": "agent_run", "run_id": run_id, "ts": t0, "phase": "started", "triggers": triggers})
         thinking, texts, usage_in, usage_out, images_sent = [], [], 0, 0, 0
-        model = s["agent.model"]
-        if len(self.latencies) >= 3 and statistics.median(self.latencies[-5:]) > 6 and model == "claude-sonnet-5-5":
+        codex = self.provider() == "codex"
+        model = s.get("agent.codex_model") or None if codex else s["agent.model"]
+        if not codex and len(self.latencies) >= 3 and statistics.median(self.latencies[-5:]) > 6 and model == "claude-sonnet-5-5":
             model = "claude-haiku-5-5"  # R6: fall back when Sonnet is too slow for the "instant" reaction
         try:
             ctx = await self.context(triggers)
@@ -118,26 +140,21 @@ class Agent:
                         images_sent += 1
             content.append({"type": "text", "text": json.dumps(ctx, default=str)})
             db.x("UPDATE agent_runs SET context=?, images_sent=?, model=? WHERE id=?",
-                 (json.dumps(ctx, default=str), images_sent, model, run_id))
+                 (json.dumps(ctx, default=str), images_sent, model or "codex (default)", run_id))
             for attempt in (0, 1):
                 acted = []
                 try:
-                    async for m in self._query(model, content, self._mcp(run_id, triggers, acted), s["agent.max_tool_iterations"]):
-                        if isinstance(m, sdk.AssistantMessage):
-                            for b in m.content:
-                                if isinstance(b, sdk.ThinkingBlock) and b.thinking:
-                                    thinking.append(b.thinking)
-                                    await app.send({"type": "agent_thinking", "run_id": run_id, "text": b.thinking})
-                                elif isinstance(b, sdk.TextBlock) and b.text:
-                                    texts.append(b.text)
-                                    self.run_text[run_id] = b.text
-                                    await app.send({"type": "agent_text", "run_id": run_id, "text": b.text})
-                        elif isinstance(m, sdk.ResultMessage):
-                            u = m.usage or {}
-                            usage_in += (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
-                            usage_out += u.get("output_tokens") or 0
-                            if m.is_error and m.subtype != "error_max_turns":
-                                raise RuntimeError(m.result or m.subtype)
+                    async for kind, *val in self._stream(model, content, run_id, triggers, acted, s["agent.max_tool_iterations"]):
+                        if kind == "thinking":
+                            thinking.append(val[0])
+                            await app.send({"type": "agent_thinking", "run_id": run_id, "text": val[0]})
+                        elif kind == "text":
+                            texts.append(val[0])
+                            self.run_text[run_id] = val[0]
+                            await app.send({"type": "agent_text", "run_id": run_id, "text": val[0]})
+                        elif kind == "usage":
+                            usage_in += val[0]
+                            usage_out += val[1]
                     break
                 except Exception:  # noqa: BLE001
                     if attempt or acted:  # retry once (§9.1.7), never after a tool already ran
@@ -158,11 +175,33 @@ class Agent:
             msg["error"] = err
         await app.send(msg)
 
+    async def _stream(self, model, content, run_id, triggers, acted, max_tools):
+        """Provider-neutral run: yields ("thinking", s), ("text", s), ("usage", in, out); raises on failure."""
+        call = lambda name, args: self._tool_result(run_id, triggers, acted, name, args)
+        if self.provider() == "codex":
+            tools = [{"name": n, "description": v[0], "inputSchema": v[1]} for n, v in T.CATALOG.items()]
+            async for ev in self.codex.run(SYSTEM, content, tools, call, model):
+                yield ev
+            return
+        async for m in self._query(model, content, self._mcp(call), max_tools):
+            if isinstance(m, sdk.AssistantMessage):
+                for b in m.content:
+                    if isinstance(b, sdk.ThinkingBlock) and b.thinking:
+                        yield ("thinking", b.thinking)
+                    elif isinstance(b, sdk.TextBlock) and b.text:
+                        yield ("text", b.text)
+            elif isinstance(m, sdk.ResultMessage):
+                u = m.usage or {}
+                yield ("usage", (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
+                       + (u.get("cache_creation_input_tokens") or 0), u.get("output_tokens") or 0)
+                if m.is_error and m.subtype != "error_max_turns":
+                    raise RuntimeError(m.result or m.subtype)
+
     def _options(self, model, system, max_turns, mcp=None):
         names = [f"mcp__eyeos__{n}" for n in T.CATALOG] if mcp else []
         return sdk.ClaudeAgentOptions(
             model=model, system_prompt=system, max_turns=max_turns, tools=[], allowed_tools=names,
-            mcp_servers={"eyeos": mcp} if mcp else {}, setting_sources=[], cli_path=CLAUDE_CLI,
+            mcp_servers={"eyeos": mcp} if mcp else {}, setting_sources=[], cli_path=CLIS["claude"],
             thinking={"type": "adaptive", "display": "summarized"}, effort="low", cwd=str(Path.home()))
 
     async def _query(self, model, content, mcp, max_turns):
@@ -171,21 +210,31 @@ class Agent:
         async for m in sdk.query(prompt=prompt(), options=self._options(model, SYSTEM, max_turns + 1, mcp)):
             yield m
 
-    def _mcp(self, run_id, triggers, acted):
-        """One in-process MCP server per run; every call goes through the gate (§9.2)."""
+    async def _tool_result(self, run_id, triggers, acted, name, args):
+        """Runs one tool call through the gate (§9.2) and shapes the result as MCP content."""
+        acted.append(name)
+        out = await self.call_tool(run_id, None, name, args, triggers)
+        if isinstance(out, list):  # screenshot: Anthropic image blocks -> MCP image content
+            return {"content": [{"type": "image", "data": b["source"]["data"], "mimeType": "image/jpeg"} for b in out]}
+        return {"content": [{"type": "text", "text": out if isinstance(out, str) else json.dumps(out, default=str)[:20000]}],
+                "isError": isinstance(out, dict) and "error" in out}
+
+    def _mcp(self, call):
+        """One in-process MCP server per Claude run."""
         def make(name):
             async def handler(args):
-                acted.append(name)
-                out = await self.call_tool(run_id, None, name, args, triggers)
-                if isinstance(out, list):  # screenshot: Anthropic image blocks -> MCP image content
-                    return {"content": [{"type": "image", "data": b["source"]["data"], "mimeType": "image/jpeg"} for b in out]}
-                return {"content": [{"type": "text", "text": out if isinstance(out, str) else json.dumps(out, default=str)[:20000]}],
-                        "is_error": isinstance(out, dict) and "error" in out}
+                r = await call(name, args)
+                return {"content": r["content"], "is_error": r.get("isError", False)}
             return sdk.tool(name, T.CATALOG[name][0], T.CATALOG[name][1])(handler)
         return sdk.create_sdk_mcp_server("eyeos", tools=[make(n) for n in T.CATALOG])
 
     async def complete(self, system, text, model=None):
         """Single-shot text completion (no tools), e.g. the daily summary."""
+        if self.provider() == "codex":
+            out = [v[0] async for kind, *v in self.codex.run(system, [{"type": "text", "text": text}],
+                                                            model=self.app.settings.get("agent.codex_model") or None)
+                   if kind == "text"]
+            return (out[-1] if out else "").strip()
         out = []
         async for m in sdk.query(prompt=text, options=self._options(model or self.app.settings["agent.model"], system, 1)):
             if isinstance(m, sdk.AssistantMessage):
@@ -274,6 +323,9 @@ class Agent:
         if err:
             await status("failed", err)
             return {"error": err}
+        if app.zen.active and (meta["kind"] == "action" or meta["ui"]):
+            await status("blocked_suppressed", "user is in Zen mode (deep focus)")
+            return "blocked: the user is in deep focus (Zen mode); do nothing visible"
         if tier == "blocked":
             await status("blocked_tier", "blocked by user setting")
             return "blocked: the user has blocked this tool"

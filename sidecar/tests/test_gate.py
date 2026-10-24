@@ -3,6 +3,7 @@ import os
 
 from eyeos.agent import Agent
 from eyeos.db import DB
+from eyeos.zen import Zen
 
 
 class FakeApp:
@@ -13,6 +14,7 @@ class FakeApp:
         self.answer = answer
         self.asked, self.sent, self.ui = [], [], []
         self.last_action = None
+        self.zen = Zen()
 
     async def send(self, m):
         self.sent.append(m)
@@ -104,3 +106,12 @@ def test_doctor_gate_needs_eligibility(tmp_path):
     demo.seed(app.db)
     out, ex = call(app, "suggest_seeing_eye_doctor", {"evidence": "x"})
     assert ex == ["suggest_seeing_eye_doctor"]
+
+
+def test_zen_blocks_every_visible_action(tmp_path):
+    app = FakeApp(tmp_path, {"approved": True})
+    app.zen.set_manual(True, 0)
+    for name, args in (("remind_to_blink", {"count": 2, "intensity": 0.5}), ("set_dark_mode", {"enabled": True}),
+                       ("ask_user", {"question": "ok?", "options": ["yes"]})):
+        out, ex = call(app, name, args)
+        assert ex == [] and app.asked == [] and "Zen" in out, name

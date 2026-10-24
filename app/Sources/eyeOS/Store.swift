@@ -1,6 +1,22 @@
 import AppKit
 import SwiftUI
 
+/// High-rate camera state (15 Hz), kept apart from Store so the charts and tiles don't redraw on every frame.
+@MainActor
+final class LiveFeed: ObservableObject {
+    @Published var landmarks: J?
+    @Published var frame: NSImage?
+    @Published var trace: [(ts: Double, o: Double)] = []          // last 60 s of openness
+    @Published var dipMarks: [(ts: Double, kind: String, o: Double)] = []
+}
+
+/// One 1 Hz sample of the live metrics, for the Live timeline (last hour kept in memory).
+struct Sample {
+    let ts: Double
+    let values: [String: Double]
+    let zen: Bool
+}
+
 /// App state mirrored from the sidecar. Swift never decides anything; it renders and relays input (SPEC §2).
 @MainActor
 final class Store: ObservableObject {
@@ -8,15 +24,16 @@ final class Store: ObservableObject {
 
     let sidecar = Sidecar()
     lazy var overlays = Overlays(store: self)
+    let feed = LiveFeed()
 
     @Published var connected = false
+    @Published var page: Page = .live
     @Published var fatal: String?
     @Published var metrics: J = [:]
     @Published var status: J = [:]
-    @Published var landmarks: J?
-    @Published var frame: NSImage?
-    @Published var trace: [(ts: Double, o: Double)] = []          // last 10 s of openness
-    @Published var dipMarks: [(ts: Double, kind: String, o: Double)] = []
+    @Published var series: [Sample] = []                         // 1 Hz, last hour
+    @Published var dayTimeline: [J] = []                           // today's metrics from the DB, for the "Today" range
+    @Published var setupRequest: SetupRequest?
     @Published var settings: J = [:]
     @Published var triggerDefaults: J = [:]
     @Published var tools: [String: J] = [:]
@@ -38,7 +55,7 @@ final class Store: ObservableObject {
         sidecar.onMessage = { [weak self] m in self?.handle(m) }
         sidecar.onFrame = { [weak self] d in
             guard let self, self.setting("ui.show_camera_image") else { return }
-            self.frame = NSImage(data: d)
+            self.feed.frame = NSImage(data: d)
         }
         sidecar.onConnected = { [weak self] ok in
             guard let self else { return }
@@ -65,17 +82,19 @@ final class Store: ObservableObject {
             triggerDefaults = m.obj("triggers") ?? [:]
         case "settings": settings = m.obj("settings") ?? settings
         case "status": status = m
-        case "metrics": metrics = m
+        case "metrics":
+            metrics = m
+            record(m)
         case "landmarks":
-            landmarks = m
+            feed.landmarks = m
             if let ts = m.num("ts") {
-                if let o = m.num("o") { trace.append((ts, o)) }
-                trace.removeAll { $0.ts < ts - 10 }
-                dipMarks.removeAll { $0.ts < ts - 10 }
+                if let o = m.num("o") { feed.trace.append((ts, o)) }
+                feed.trace.removeAll { $0.ts < ts - 60 }
+                feed.dipMarks.removeAll { $0.ts < ts - 60 }
             }
         case "event":
             if m.str("kind") == "dip" {
-                dipMarks.append((m.num("ts") ?? 0, m.obj("details")?.str("dip") ?? "blink", m.num("value") ?? 0))
+                feed.dipMarks.append((m.num("ts") ?? 0, m.obj("details")?.str("dip") ?? "blink", m.num("value") ?? 0))
             } else if isToday {
                 events.insert(m, at: 0)
             }
@@ -140,8 +159,27 @@ final class Store: ObservableObject {
         sidecar.command("get_summary", ["date": dayString])
     }
 
+    func loadTimelineDay() {
+        let from = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
+        sidecar.send(["type": "history_request", "request_id": "timeline", "kind": "metrics", "from": from,
+                      "to": Date().timeIntervalSince1970 + 1, "limit": 480])
+    }
+
+    /// Keeps a 1 Hz copy of the numeric metrics for the Live timeline's 1 m / 10 m / 1 h ranges.
+    private func record(_ m: J) {
+        guard let ts = m.num("ts"), m.bool("face_present") else { return }
+        if let last = series.last, ts - last.ts < 1 { return }
+        var v: [String: Double] = [:]
+        for k in MetricDef.all.map(\.id) where k != "openness" {
+            if let x = m.num(k) { v[k] = x } else if let b = m[k] as? Bool { v[k] = b ? 1 : 0 }
+        }
+        series.append(Sample(ts: ts, values: v, zen: m.bool("zen")))
+        if series.count > 3700 { series.removeFirst(series.count - 3600) }
+    }
+
     private func applyHistory(_ m: J) {
         let rows = m.arr("rows")
+        if m.str("request_id") == "timeline" { dayTimeline = rows; return }
         switch m.str("kind") {
         case "metrics": chartMetrics = rows
         case "events": events = rows
@@ -173,6 +211,15 @@ final class Store: ObservableObject {
 
     // MARK: - derived
 
+    var provider: String { settings.str("agent.provider") ?? "claude" }
+    var providerName: String { provider == "codex" ? "Codex" : "Claude" }
+    var agentAvailable: Bool { status.bool("agent_available") }
+
+    var zen: J { status.obj("zen") ?? [:] }
+    var inZen: Bool { zen.bool("active") }
+    var today: J { status.obj("today") ?? [:] }
+    func setZen(_ on: Bool) { sidecar.command("zen", ["on": on]) }
+
     /// Worst status across the Live cards, for the menu bar dot.
     var worstLevel: Level {
         let ls = [levelHigh(metrics.num("blink_rate"), good: 12, warn: 8),
@@ -183,4 +230,10 @@ final class Store: ObservableObject {
         if ls.contains(.warn) { return .warn }
         return ls.contains(.good) ? .good : .none
     }
+}
+
+/// Asks RootView to open setup: the full first-run flow or just the calibration steps.
+struct SetupRequest: Identifiable {
+    let id = UUID()
+    let recalibrate: Bool
 }
