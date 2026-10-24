@@ -24,6 +24,8 @@ class Zen:
         self.blinks = []            # blink_rate samples during the current Zen
         self.longest_stare = 0.0
         self.offtask_since = None
+        self.conductor = []         # recent on-device conductor decisions (newest last), set by tick()
+        self.quick_exits = 0        # times the user ended auto Zen within 2 min: wait for more evidence next time
 
     def state(self, now):
         return {"active": self.active, "since": self.since, "source": self.source, "held_back": self.held_back,
@@ -36,11 +38,18 @@ class Zen:
             return "enter", self._enter(now, "manual")
         if not on and self.active:
             self.manual_off = True
+            if self.source == "auto" and now - self.since < 120:
+                self.quick_exits = min(2, self.quick_exits + 1)  # we got it wrong: be stricter
             return "exit", self._exit(now, "manual")
         return None
 
-    def tick(self, now, snap, input_age, category, enter_s, enabled=True):
-        """Feed one 1 Hz sample. Returns ("enter"|"exit", info) on a state change, else None."""
+    def tick(self, now, snap, input_age, category, enter_s, enabled=True, conductor=None):
+        """Feed one 1 Hz sample. Returns ("enter"|"exit", info) on a state change, else None.
+
+        conductor: the on-device conductor's recent decisions ({focus, situation, ...}, newest last). When there are
+        enough of them they decide whether this is deep focus; the timing checks below stay as guard rails.
+        """
+        self.conductor = list(conductor or [])
         face = bool(snap.get("face_present"))
         self.samples.append((now, face, bool(snap.get("gaze_on_screen")), input_age, category))
         if self.active:
@@ -69,9 +78,16 @@ class Zen:
             return False
         if sum(1 for s in faces if s[2]) < 0.75 * len(faces):
             return False
-        if sum(1 for s in win if s[3] is not None and s[3] < IDLE_INPUT_S) < 0.7 * n:
-            return False
         if any(s[4] == "call" for s in win):
+            return False
+        need = 3 + self.quick_exits                  # 3 of the last 4 checks (~2 min), stricter after quick exits
+        recent = self.conductor[-(need + 1):]
+        if len(recent) >= need:                      # the conductor sees the screen: it judges the focus
+            if any(d.get("situation") == "meeting" for d in recent):
+                return False
+            return sum(1 for d in recent if d.get("focus") == "deep") >= need and recent[-1].get("focus") == "deep"
+        # no conductor (Ollama off): fall back to activity + a work app in front
+        if sum(1 for s in win if s[3] is not None and s[3] < IDLE_INPUT_S) < 0.7 * n:
             return False
         return sum(1 for s in win if s[4] in WORK) >= 0.8 * n
 
@@ -82,12 +98,17 @@ class Zen:
             return None  # manual Zen lasts until the user ends it
         if (snap.get("since_real_break_s") or 0) < 5 and now - self.since > 30:
             return "break"
+        last = self.conductor[-3:]
+        if self.conductor and self.conductor[-1].get("situation") == "meeting":
+            return "call"
+        if len(last) == 3 and all(d.get("focus") != "deep" for d in last) and all(d["ts"] > self.since for d in last):
+            return "focus_ended"  # three checks in a row (~90 s) without deep focus
         recent = [s for s in self.samples if now - s[0] <= EXIT_AWAY_S]
         if recent and now - recent[0][0] >= EXIT_AWAY_S * 0.9 and not any(s[1] for s in recent):
             return "away"
-        if input_age is not None and input_age > EXIT_IDLE_S:
-            return "idle"
-        if category in WORK:
+        if input_age is not None and input_age > EXIT_IDLE_S and not (self.conductor and self.conductor[-1].get("focus") == "deep"):
+            return "idle"  # (deep reading without typing isn't idle when the conductor still sees focus)
+        if category in WORK or len(self.conductor) >= 3:
             self.offtask_since = None
         else:
             self.offtask_since = self.offtask_since or now

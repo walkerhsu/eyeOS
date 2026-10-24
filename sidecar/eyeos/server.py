@@ -217,7 +217,8 @@ class App:
                 input_age = None
             if snap.get("calibrated") and not self.settings["tracking.paused"]:
                 change = self.zen.tick(time.time(), snap, input_age, self.active.get("category"),
-                                       self.settings["zen.enter_min"] * 60, self.settings["zen.enabled"])
+                                       self.settings["zen.enter_min"] * 60, self.settings["zen.enabled"],
+                                       self.screen.recent(5) if self.settings["privacy.local_vision"] else None)
                 if change:
                     await self.zen_changed(*change)
             if n % 30 == 1:

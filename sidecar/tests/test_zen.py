@@ -105,3 +105,43 @@ def test_recap_stats_empty_session():
     from eyeos.zen import recap_stats
     s = recap_stats([], [], base_blink=None)
     assert s["highlights"] == [] and s["alerts_held_total"] == 0
+
+
+def conductor_run(z, t0, t1, decide, cat="other", input_age=2):
+    """Tick 1 Hz; every 30 s the conductor adds a decision from decide(t)."""
+    hist, out = [], []
+    for t in range(t0, t1):
+        if t % 30 == 0:
+            hist.append({"ts": t, **decide(t)})
+        c = z.tick(t, snap(t), input_age, cat, ENTER, conductor=hist[-5:])
+        if c:
+            out.append((t, c))
+    return out
+
+
+def test_conductor_deep_focus_enters_even_in_a_browser():
+    z = Zen()  # category "other" would block the old rule; the conductor sees deep work
+    ch = conductor_run(z, 0, ENTER + 5, lambda t: {"focus": "deep", "situation": "deep_work"})
+    assert ch and ch[0][1][0] == "enter"
+
+
+def test_conductor_casual_blocks_entry_even_in_vs_code():
+    z = Zen()
+    assert conductor_run(z, 0, ENTER + 200, lambda t: {"focus": "light", "situation": "casual"}, cat="coding") == []
+
+
+def test_conductor_exits_when_focus_ends_and_on_meetings():
+    z = Zen()
+    ch = conductor_run(z, 0, ENTER + 400, lambda t: {"focus": "deep" if t < ENTER + 100 else "none", "situation": "casual"})
+    assert [c[1][0] for c in ch] == ["enter", "exit"] and ch[1][1][1]["reason"] == "focus_ended"
+    z = Zen()
+    ch = conductor_run(z, 0, ENTER + 200, lambda t: {"focus": "deep", "situation": "meeting" if t > ENTER + 60 else "deep_work"})
+    assert ch[-1][1][1]["reason"] == "call"
+
+
+def test_quick_manual_exit_makes_entry_stricter():
+    z = Zen()
+    conductor_run(z, 0, ENTER + 5, lambda t: {"focus": "deep", "situation": "deep_work"})
+    assert z.active
+    z.set_manual(False, ENTER + 30)
+    assert z.quick_exits == 1
