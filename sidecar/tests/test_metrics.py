@@ -55,6 +55,12 @@ def test_shallow_dip_is_incomplete():
     assert [e["kind"] for e in ev] == ["incomplete"]
 
 
+def test_quick_natural_blink_is_complete():
+    # at 30 fps a natural blink's bottom is rarely sampled at full closure: recorded ones reach 0.2-0.4
+    ev = run_dips([1, 0.6, 0.3, 0.7, 1])
+    assert [e["kind"] for e in ev] == ["blink"]
+
+
 def test_very_shallow_dip_is_noise():
     assert run_dips([1, 0.7, 0.65, 0.7, 1]) == []
 
@@ -123,6 +129,13 @@ def test_engine_blink_rate_and_stare():
     assert s["longest_stare_s"] == pytest.approx(5.8, abs=0.3)
     assert s["perclos"] == pytest.approx(0.2 / 6, abs=0.02)
     assert s["distance_cm"] is not None
+
+
+def test_perclos_counts_only_near_closed_frames():
+    eng = M.Engine()
+    # half-closed lids (o 0.3) for 1 s of every 6: counts as blinks, but not as closed eyes
+    _feed(eng, 1000.0, 60.5, lambda s: 0.3 if (s % 6) > 5.0 else 1.0)
+    assert eng.snapshot()["perclos"] == 0
 
 
 def test_engine_real_break():

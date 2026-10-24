@@ -206,12 +206,12 @@ Classification on dip end, with `frames = number of frames in DIP`:
 | Condition | Result |
 |---|---|
 | `frames < 2` | noise, ignored |
-| `min_o ≤ 0.20` | **complete blink**, `duration = end − start` |
-| `0.20 < min_o ≤ 0.60` | **incomplete blink** |
+| `min_o ≤ 0.35` | **complete blink**, `duration = end − start` |
+| `0.35 < min_o ≤ 0.60` | **incomplete blink** |
 | `min_o > 0.60` | noise, ignored |
 | complete blink with `duration > 0.5 s` | also flagged **long blink** (fatigue) |
 
-The 2-frame minimum matches the "below threshold for 2–3 frames" rule. A threshold `o ≤ 0.20` means the lids are ≥ 80% closed, the same definition PERCLOS uses. Threshold constants live in settings (§8) under `advanced.*`.
+The 2-frame minimum matches the "below threshold for 2–3 frames" rule. The complete-blink line is 0.35, not the textbook 0.20 (lids ≥ 80% closed): a natural blink lasts 100–150 ms, so at 30 fps the 1–2 frames at its bottom rarely catch full closure, and with the eye only ~12 px of iris wide the lid landmarks are coarse. Recorded natural blinks bottomed out at 0.2–0.4, while only slow, deliberate blinks reached 0.20 (measure your own with `sidecar/scripts/blink_report.py`). PERCLOS keeps 0.20 (`perclos_o`), since sustained closure does reach it. Threshold constants live in settings (§8) under `advanced.*`.
 
 Derived metrics:
 
@@ -229,7 +229,7 @@ A stare clock pauses while the face is absent or looking away (§4.6), since a s
 
 ### 4.4 PERCLOS
 ```
-PERCLOS = (frames with o ≤ 0.20) / (face-present frames)   over rolling 60 s
+PERCLOS = (frames with o ≤ perclos_o = 0.20) / (face-present frames)   over rolling 60 s
 ```
 Reported as a percentage. Reference: < 8% alert, 8–15% borderline, > 15% drowsy.
 
@@ -511,7 +511,7 @@ Settings live in the SQLite `settings` table (key → JSON value), owned by Pyth
 | `zen.enter_min` | number 1–60 | 10 | minutes of sustained focus before auto Zen |
 | `quiet_apps` | [bundle id \| title substring] | see §9.4 | UI tools suppressed |
 | `calibration.distance_cm` | number | 60 | |
-| `advanced.dip_start_o` / `dip_end_o` / `complete_o` / `incomplete_max_o` / `long_blink_s` | numbers | 0.75 / 0.85 / 0.20 / 0.60 / 0.5 | |
+| `advanced.dip_start_o` / `dip_end_o` / `complete_o` / `perclos_o` / `incomplete_max_o` / `long_blink_s` | numbers | 0.75 / 0.85 / 0.35 / 0.20 / 0.60 / 0.5 | |
 | `advanced.real_break_s` | int | 20 | |
 | `audio.voice_id` | str | a Cartesia default voice | |
 | `audio.speed` | number | 1.0 | |
