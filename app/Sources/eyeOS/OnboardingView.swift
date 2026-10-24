@@ -178,6 +178,7 @@ struct CalibrationStep<Art: View>: View {
         let c = store.calibration?.int("step") == step ? store.calibration : nil
         let phase = c?.str("phase")
         let running = phase == "started" || phase == "progress"
+        let warnings = phase == "done" ? (c?["warnings"] as? [String]) ?? [] : []
         VStack(spacing: 18) {
             Spacer(minLength: 4)
             art.frame(height: 150)
@@ -185,7 +186,7 @@ struct CalibrationStep<Art: View>: View {
                 Text(title).font(.system(size: 24, weight: .bold))
                 Text(subtitle).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 400)
             }
-            faceCheck
+            if warnings.isEmpty { faceCheck }  // make room for the warning
             Spacer(minLength: 4)
             if phase == "failed" {
                 Label(c?.obj("result")?.str("reason") ?? "That didn't work. Try again.", systemImage: "exclamationmark.triangle.fill")
@@ -199,25 +200,40 @@ struct CalibrationStep<Art: View>: View {
                     Text("\(Int((c?.num("progress") ?? 0) * 100))%").font(.caption.monospacedDigit())
                 }
                 .frame(width: 48, height: 48)
-            } else if phase == "done" {
+            } else if phase == "done" && warnings.isEmpty {
                 Label("Done", systemImage: "checkmark.circle.fill").foregroundStyle(.mint).font(.headline).frame(height: 48)
-            } else {
-                Button {
-                    store.sidecar.command("calibrate", ["step": step])
-                    if step == 2 { store.overlays.showCalibrationDots() }
-                } label: {
-                    Text(phase == "failed" ? "Try again" : "Start").font(.headline).frame(width: 220, height: 30)
+            } else if phase == "done" {
+                VStack(spacing: 6) {
+                    Label("Saved, though it may be a little off", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.yellow).font(.callout.weight(.semibold))
+                    Text(warnings.joined(separator: " ") + " For the best tracking, try this step again.")
+                        .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 400)
                 }
-                .buttonStyle(.borderedProminent).controlSize(.large).keyboardShortcut(.defaultAction)
-                .disabled(!store.connected || !store.metrics.bool("face_present"))
+                HStack(spacing: 14) {
+                    Button("Continue anyway") { store.calibration = nil; next() }.buttonStyle(.borderless).foregroundStyle(.secondary)
+                    startButton("Try again")
+                }
+            } else {
+                startButton(phase == "failed" ? "Try again" : "Start")
             }
         }
         .onChange(of: phase) {
             if step == 2, phase == "done" || phase == "failed" { store.overlays.hideCalibrationDots() }
-            if phase == "done" {
+            if phase == "done" && warnings.isEmpty {  // a weak result waits for the user to choose
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { store.calibration = nil; next() }
             }
         }
+    }
+
+    func startButton(_ label: String) -> some View {
+        Button {
+            store.sidecar.command("calibrate", ["step": step])
+            if step == 2 { store.overlays.showCalibrationDots() }
+        } label: {
+            Text(label).font(.headline).frame(width: 220, height: 30)
+        }
+        .buttonStyle(.borderedProminent).controlSize(.large).keyboardShortcut(.defaultAction)
+        .disabled(!store.connected || !store.metrics.bool("face_present"))
     }
 
     @ViewBuilder var faceCheck: some View {

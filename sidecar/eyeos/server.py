@@ -31,6 +31,8 @@ from .zen import Zen, eye_score, recap_stats
 VERSION = "0.1.0"
 EVENT_KIND = {"rub": "rub", "yawn": "yawn", "break": "break", "eyes_closed": "blink_anomaly", "blink": "blink_anomaly"}
 CAL_SECONDS = {1: 3, 2: 10, 3: 60}
+GAZE_DOTS = ["center", "top_left", "top_right", "bottom_right", "bottom_left"]
+MIN_CAL_BLINKS = 3    # in the 60 s baseline; fewer is unusual enough that blinks were probably missed
 HISTORY_KEYS = ("blink_rate", "perclos", "distance_cm", "squint_delta", "incomplete_pct", "eye_score", "current_stare_s",
                 "longest_stare_s", "gaze_on_screen", "blink_duration_ms", "since_real_break_s", "zen")
 
@@ -423,6 +425,27 @@ class App:
     async def calibrate(self, step, args):
         if step not in CAL_SECONDS:
             return await self.send({"type": "error", "code": "bad_step", "message": f"unknown calibration step {step}"})
+        if self.settings["tracking.paused"]:
+            return await self.calibration_failed(step, "Tracking is paused. Resume it and try again.")
+        # data stays NULL while the step runs; DB.close_interrupted logs leftovers if eyeOS quits mid-step
+        cal_id = self.db.x("INSERT INTO calibration (ts, step, data) VALUES (?, ?, NULL)", (time.time(), step))
+        try:
+            await self._calibrate(step, args, cal_id)
+        except Exception as e:  # noqa: BLE001 - report it, or the app's progress ring spins forever
+            traceback.print_exc()
+            await self.calibration_failed(step, f"Something went wrong ({type(e).__name__}). Try again.", cal_id,
+                                          event="calibration_error", error=str(e))
+        finally:
+            with self.lock:
+                self.engine.recorder = None
+
+    async def calibration_failed(self, step, reason, cal_id=None, event="calibration_failed", **extra):
+        await self.send({"type": "calibration", "step": step, "phase": "failed", "progress": 1, "result": {"reason": reason}})
+        if cal_id:
+            self.db.x("UPDATE calibration SET data=? WHERE id=?", (json.dumps({"failed": reason, **extra}), cal_id))
+        self.log_event("system", None, None, {"event": event, "step": step, "reason": reason, **extra})
+
+    async def _calibrate(self, step, args, cal_id):
         samples, dips = [], []
         dur = CAL_SECONDS[step]
         with self.lock:
@@ -434,15 +457,22 @@ class App:
             p = min(1.0, (time.time() - t0) / dur)
             msg = {"type": "calibration", "step": step, "phase": "progress", "progress": round(p, 3)}
             if step == 2:
-                msg["target"] = ["center", "top_left", "top_right", "bottom_right", "bottom_left"][min(4, int(p * 5))]
+                msg["target"] = GAZE_DOTS[min(4, int(p * 5))]
             await self.send(msg)
         with self.lock:
             self.engine.recorder = None
             blinks = [b for b in self.engine.blinks if b[0] >= t0]
         face = [s for s in samples if s["present"]]
-        if not samples or len(face) < 0.5 * len(samples):
-            return await self.send({"type": "calibration", "step": step, "phase": "failed", "progress": 1,
-                                    "result": {"reason": "face not visible for most of the step; try again"}})
+        if self.settings["tracking.paused"]:
+            return await self.calibration_failed(step, "Tracking was paused during the step. Resume it and try again.", cal_id)
+        if not samples:  # the vision loop recorded nothing at all
+            return await self.calibration_failed(step, "The camera isn't sending video. Check it's not in use by another app and try again.", cal_id)
+        if len(face) < 0.5 * len(samples):
+            return await self.calibration_failed(step, "We couldn't see your face for most of the step. Try again.", cal_id)
+        # weak data: still saved, but the user is told it may be off
+        warnings = []
+        if len(face) < 0.8 * len(samples):
+            warnings.append("Your face was out of view for part of the step.")
         cal = {}
         if step == 1:
             cal["w_px_cal"] = round(statistics.median(s["w_px"] for s in face), 3)
@@ -461,8 +491,14 @@ class App:
             gxs = [med(d, "gx") for d in per_dot if d]
             gys = [med(d, "gy") for d in per_dot if d]
             cal.update(gx_min=min(gxs), gx_max=max(gxs), gy_min=min(gys), gy_max=max(gys))
+            if not all(per_dot):
+                warnings.append("We couldn't see your eyes at some of the dots.")
         else:
             open_ = [s for s in face if s.get("state") == "OPEN"]
+            if not open_:
+                warnings.append("We couldn't get a clear look at your eyes.")
+            if len(blinks) < MIN_CAL_BLINKS:
+                warnings.append("We didn't catch many blinks.")
             cal["ear_open"] = round(statistics.median(s["ear"] for s in open_), 4) if open_ else 0.28
             cal["squint_score"] = round(statistics.median(s["squint_score"] for s in open_), 4) if open_ else 0.0
             minutes = len(face) / len(samples) * dur / 60
@@ -470,14 +506,16 @@ class App:
             cal["blink_duration_ms"] = round(1000 * statistics.fmean(b[1] for b in blinks)) if blinks else None
             cal["calibrated"] = True
         cal = {k: (round(v, 4) if isinstance(v, float) else v) for k, v in cal.items()}
-        self.db.x("INSERT INTO calibration (ts, step, data) VALUES (?, ?, ?)", (time.time(), step, json.dumps(cal)))
+        self.db.x("UPDATE calibration SET data=? WHERE id=?", (json.dumps({**cal, "warnings": warnings}), cal_id))
         with self.lock:
             self.engine.set_cal(cal)
             if step == 1:
                 self.engine.distance = None
                 self.engine.dist_raw.clear()
         self.db.save_baseline(self.engine.cal, f"calibration step {step}")
-        await self.send({"type": "calibration", "step": step, "phase": "done", "progress": 1, "result": cal})
+        self.log_event("system", None, None, {"event": "calibration_weak" if warnings else "calibration", "step": step,
+                                              **cal, "warnings": warnings})
+        await self.send({"type": "calibration", "step": step, "phase": "done", "progress": 1, "result": cal, "warnings": warnings})
         await self.send_status(force=True)
 
     # ---------- websocket I/O ----------

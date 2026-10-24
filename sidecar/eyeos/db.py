@@ -118,13 +118,19 @@ class DB:
         self.close_interrupted()
 
     def close_interrupted(self):
-        """Runs and tool calls still in flight from a previous session (app quit mid-run, e.g. during an
-        unanswered ask_user) can never finish; close them out so they don't show as pending forever."""
+        """Runs, tool calls and calibration steps still in flight from a previous session (app quit mid-run,
+        e.g. during an unanswered ask_user) can never finish; close them out so they don't show as pending forever."""
         msg = "interrupted: eyeOS quit before this finished"
         self.c.execute("UPDATE tool_calls SET status='failed', result=? "
                        "WHERE status IN ('requested', 'awaiting_approval', 'approved', 'executing')", (json.dumps(msg),))
         self.c.execute("UPDATE agent_runs SET status='error', error=?, ts_end=COALESCE(ts_end, ts_start) "
                        "WHERE status='started'", (msg,))
+        # a calibration step's row has data NULL until it finishes (server.calibrate)
+        reason = "eyeOS quit or restarted before this step finished."
+        for r in self.q("SELECT ts, step FROM calibration WHERE data IS NULL"):
+            self.c.execute("INSERT INTO events (ts, kind, details) VALUES (?, 'system', ?)",
+                           (r["ts"], json.dumps({"event": "calibration_interrupted", "step": r["step"], "reason": reason})))
+        self.c.execute("UPDATE calibration SET data=? WHERE data IS NULL", (json.dumps({"interrupted": reason}),))
 
     def q(self, sql, args=()):
         return [dict(r) for r in self.c.execute(sql, args).fetchall()]

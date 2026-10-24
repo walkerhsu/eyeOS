@@ -61,6 +61,11 @@ final class Store: ObservableObject {
             guard let self else { return }
             self.connected = ok
             if ok { self.fatal = nil; self.loadDay() }
+            // a step can't outlive its sidecar (the sidecar logs it as interrupted when it starts again)
+            if let c = self.calibration, ["started", "progress"].contains(c.str("phase") ?? "") {
+                self.calibration = ["type": "calibration", "step": c.int("step") ?? 0, "phase": "failed", "progress": 1,
+                                    "result": ["reason": "eyeOS restarted before this step finished. Try again."]]
+            }
         }
         sidecar.onFatal = { [weak self] s in self?.fatal = s }
     }
@@ -123,7 +128,12 @@ final class Store: ObservableObject {
         case "ui_request": overlays.show(m)
         case "ui_dismiss": overlays.dismiss(m.str("request_id") ?? "")
         case "tool_exec": overlays.exec(m)
-        case "calibration": calibration = m
+        case "calibration":
+            calibration = m
+            // the blink baseline runs after setup closes, so a weak result is reported in a banner
+            if m.int("step") == 3, m.str("phase") == "done", let w = (m["warnings"] as? [String])?.first {
+                overlays.showWeakBaseline(w)
+            }
         case "history": applyHistory(m)
         case "summary":
             if let d = m.str("date"), d == dayString { summary = m }

@@ -274,6 +274,7 @@ struct EventCard: View {
             case "situation": "Now: " + humanize(e.obj("details")?.str("situation") ?? "")
             case "deferred": "Held a nudge"
             case "reflection": "Reflection"
+            case _ where isCalibration: "Calibration · " + humanize(calibrationStep)
             default: humanize(event.isEmpty ? "system" : event)
             }
         }
@@ -298,6 +299,15 @@ struct EventCard: View {
             }
             return parts.joined(separator: " · ")
         default:
+            if isCalibration {
+                switch event {
+                case "calibration": return "Done · baseline updated"
+                case "calibration_weak": return "Saved, but may be off · " + ((d["warnings"] as? [String]) ?? []).joined(separator: " ")
+                case "calibration_interrupted": return "Interrupted · " + (d.str("reason") ?? "")
+                case "calibration_error": return "Error · " + (d.str("reason") ?? "")
+                default: return "Failed · " + (d.str("reason") ?? "")
+                }
+            }
             if isErrorEvent(e) { return "Something went wrong" }
             switch event {
             case "situation": return [d.str("activity"), d.str("reason")].compactMap { $0 }.joined(separator: " · ")
@@ -311,8 +321,20 @@ struct EventCard: View {
     var valueText: String? {
         switch e.str("kind") {
         case "trigger": triggerValue(e.str("trigger_id"), value)
+        case "system" where event == "calibration" || event == "calibration_weak":
+            switch e.obj("details")?.int("step") {
+            case 1: e.obj("details")?.num("distance_cm").map { fmt($0, 0, suffix: " cm") }
+            case 3: e.obj("details")?.num("blink_rate").map { fmt($0, 1, suffix: " /min") }
+            default: nil
+            }
         default: nil
         }
+    }
+
+    /// calibration, calibration_weak / _failed / _error / _interrupted, one per step
+    var isCalibration: Bool { e.str("kind") == "system" && event.hasPrefix("calibration") }
+    var calibrationStep: String {
+        switch e.obj("details")?.int("step") { case 1: "distance"; case 2: "gaze"; default: "blink baseline" }
     }
 
     var icon: String {
@@ -321,14 +343,17 @@ struct EventCard: View {
         case "blink_anomaly": "eye.slash"; case "zen": "moon.stars.fill"
         default:
             isErrorEvent(e) ? "exclamationmark.triangle.fill" :
-            ["situation": "lock.display", "deferred": "hourglass", "reflection": "sparkles"][event] ?? "gearshape"
+            ["situation": "lock.display", "deferred": "hourglass", "reflection": "sparkles", "calibration": "scope",
+             "calibration_weak": "exclamationmark.circle", "calibration_failed": "exclamationmark.triangle",
+             "calibration_interrupted": "pause.circle"][event] ?? "gearshape"
         }
     }
 
     var color: Color {
         switch e.str("kind") {
         case "trigger": .yellow; case "break": .green; case "zen": .indigo; case "rub", "blink_anomaly", "yawn": .orange
-        default: isErrorEvent(e) ? .pink : ["situation": Color.mint, "deferred": .indigo, "reflection": .purple][event] ?? .gray
+        default: isErrorEvent(e) ? .pink : ["situation": Color.mint, "deferred": .indigo, "reflection": .purple, "calibration": .teal,
+                                            "calibration_weak": .yellow, "calibration_failed": .orange][event] ?? .gray
         }
     }
 }

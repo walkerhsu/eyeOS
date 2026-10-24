@@ -134,6 +134,13 @@ final class Overlays {
 
     func hideCalibrationDots() { dismiss("calibration") }
 
+    func showWeakBaseline(_ warning: String) {
+        present("weak_baseline", AnyView(WeakBaselineCard(warning: warning) { [weak self] redo in
+            self?.dismiss("weak_baseline")
+            if redo { self?.store.sidecar.command("calibrate", ["step": 3]) }
+        }), at: .banner)
+    }
+
     // MARK: - panel plumbing
 
     enum Anchor { case banner, bottomCenter, center }
@@ -469,6 +476,23 @@ struct AudioPill: View {
         .padding(.horizontal, 18)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.regularMaterial, in: Capsule())
+    }
+}
+
+struct WeakBaselineCard: View {
+    let warning: String
+    let done: (_ redo: Bool) -> Void
+    var body: some View {
+        Card(title: "Calibration may not have succeeded", icon: "eye") {  // title is one line; keep it short
+            Text("\(warning.trimmingCharacters(in: CharacterSet(charactersIn: "."))) — we suggest you try again. "
+                 + "It only takes a minute. Just keep working; you don't need to do anything.")
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Not now") { done(false) }.controlSize(.small)
+                Button("Try again") { done(true) }.controlSize(.small)
+            }
+        }
     }
 }
 
