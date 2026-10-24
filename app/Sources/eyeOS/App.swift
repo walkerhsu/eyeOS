@@ -85,9 +85,9 @@ struct EyeOSApp: App {
             if store.inZen {
                 Image(systemName: "eye")
             } else {
-                let br = store.metrics.num("blink_rate")
+                let score = store.metrics.num("eye_score")
                 let dot = ["good": "🟢", "warn": "🟠", "bad": "🔴"][String(describing: store.worstLevel)] ?? ""
-                Text("👁 \(br.map { String(Int($0)) } ?? "–") \(dot)")
+                Text("👁 \(score.map { String(Int($0.rounded())) } ?? "–") \(dot)")
             }
         }
         .menuBarExtraStyle(.window)
