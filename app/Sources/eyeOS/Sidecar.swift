@@ -46,7 +46,8 @@ final class Sidecar {
         p.currentDirectoryURL = URL(fileURLWithPath: repoPath + "/sidecar")
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = Self.searchPath
-        for (k, acct) in [("CARTESIA_API_KEY", "cartesia"), ("ANTHROPIC_API_KEY", "anthropic")] {
+        for (k, acct) in [("CARTESIA_API_KEY", "cartesia"), ("ANTHROPIC_API_KEY", "anthropic"), ("CODEX_API_KEY", "codex"),
+                          ("EYEOS_AGENT_API_KEY", "agent_endpoint"), ("EYEOS_VISION_API_KEY", "vision_endpoint")] {
             if let v = Keychain.get(acct), !v.isEmpty { env[k] = v } else { env.removeValue(forKey: k) }
         }
         p.environment = env

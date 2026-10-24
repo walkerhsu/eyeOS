@@ -4,8 +4,9 @@ Each check combines one screenshot with the eye/posture metrics and the previous
 user is doing, the situation (deep work, meeting, casual...), how deep the focus is and how interruptible they are.
 eyeOS uses that to enter/leave Zen and to decide whether a nudge should go out now or wait.
 
-Privacy: the screenshot is captured straight into memory, never written to disk, sent only to the local model
-(Ollama on 127.0.0.1) and wiped as soon as the check is done. The cloud agent only ever gets the text below,
+Privacy: the screenshot is captured straight into memory, never written to disk, sent only to the vision model
+(Ollama on 127.0.0.1, or the OpenAI-compatible server the user picked; state() flags one that isn't on this Mac)
+and wiped as soon as the check is done. The cloud agent only ever gets the text below,
 which the prompt keeps free of names, numbers and quoted private text. Continuity between checks comes from the
 previous check's text, not from keeping old images.
 """
@@ -13,12 +14,16 @@ import asyncio
 import base64
 import collections
 import json
+import os
+import re
 import shutil
 import subprocess
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 
+from . import openai_compat as OA
 from .tools import system as S
 
 OLLAMA = "http://127.0.0.1:11434"
@@ -56,6 +61,14 @@ def _post(path, body, timeout):
 def _get(path, timeout=2):
     with urllib.request.urlopen(OLLAMA + path, timeout=timeout) as r:
         return json.load(r)
+
+
+def _parse(raw):
+    """The JSON object in a reply; servers without a JSON mode may wrap it in prose or a code fence."""
+    m = re.search(r"\{.*\}", raw or "", re.S)
+    if not m:
+        raise ValueError("the vision model's reply had no JSON")
+    return json.loads(m.group(0))
 
 
 def _normalize(d):
@@ -96,7 +109,11 @@ class ScreenWatch:
     def state(self):
         s = self.settings()
         d = self.latest or {}
+        openai = s["privacy.vision_backend"] == "openai"
         return {"enabled": s["privacy.local_vision"], "ok": self.ok, "model": s["privacy.local_model"], "error": self.error,
+                "backend": s["privacy.vision_backend"],
+                "on_device": not openai or OA.on_this_mac(s["privacy.vision_base_url"]),
+                "host": urlparse(s["privacy.vision_base_url"]).hostname if openai else "127.0.0.1",
                 "activity": d.get("activity"), "situation": d.get("situation"), "focus": d.get("focus"),
                 "interruptibility": d.get("interruptibility"), "reason": d.get("reason"),
                 "age_s": round(time.time() - d["ts"]) if d else None}
@@ -111,6 +128,8 @@ class ScreenWatch:
                 "privacy": "described on-device by a local model; screen pixels were not sent to you"}
 
     async def ensure_server(self):
+        if self.settings()["privacy.vision_backend"] == "openai":
+            return True  # someone else's server: a failed request says what's wrong
         try:
             await asyncio.to_thread(_get, "/api/version")
             return True
@@ -132,9 +151,17 @@ class ScreenWatch:
         self.error = "couldn't start Ollama"
         return False
 
+    async def ollama_models(self):
+        if not await self.ensure_server():
+            raise RuntimeError(self.error)
+        return sorted(m["name"] for m in (await asyncio.to_thread(_get, "/api/tags")).get("models") or [])
+
     async def ask(self, prompt, images=(), json_mode=True, timeout=180):
-        """One local chat turn. Returns the reply text."""
+        """One chat turn with the vision model. Returns the reply text."""
         s = self.settings()
+        if s["privacy.vision_backend"] == "openai":  # no portable JSON mode: describe_now pulls the JSON out of the reply
+            return await OA.ask(s["privacy.vision_base_url"], s["privacy.local_model"], prompt, images,
+                                os.environ.get(OA.VISION_KEY_ENV), timeout)
         body = {"model": s["privacy.local_model"], "stream": False, "think": False, "keep_alive": "15m",
                 "options": {"temperature": 0.1, "num_ctx": 8192},
                 "messages": [{"role": "user", "content": prompt, "images": list(images)}]}
@@ -159,7 +186,7 @@ class ScreenWatch:
             prev = {k: self.latest.get(k) for k in ("activity", "situation", "focus", "interruptibility")} if self.latest else None
             info = json.dumps({"metrics": self.metrics(), "previous_check": prev}, default=str)
             raw = await self.ask(PROMPT + info, [base64.b64encode(shot).decode()])
-            d = _normalize(json.loads(raw))
+            d = _normalize(_parse(raw))
             d["ts"] = time.time()
             self.latest = d
             self.history.append(d)

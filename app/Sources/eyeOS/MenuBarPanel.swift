@@ -201,6 +201,7 @@ struct MenuBarPanel: View {
                 Picker("Provider", selection: Binding(get: { store.provider }, set: { store.set("agent.provider", $0) })) {
                     Text("Claude").tag("claude")
                     Text("Codex").tag("codex")
+                    Text("OpenAI-compatible").tag("openai")
                 }
                 Button("Run Agent Now") { store.sidecar.command("run_agent_now") }
                     .disabled(!store.agentAvailable || store.status.bool("agent_busy") || !store.setting("agent.enabled"))

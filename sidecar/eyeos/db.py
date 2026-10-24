@@ -58,6 +58,8 @@ def _num(lo=None, hi=None, typ=(int, float)):
 _bool = lambda v: isinstance(v, bool)
 _str = lambda v: isinstance(v, str) and len(v) < 500
 _tier = lambda v: v in ("auto", "ask", "blocked")
+_url = lambda v: isinstance(v, str) and v.startswith(("http://", "https://")) and len(v) < 300
+_model = lambda v: isinstance(v, str) and len(v) < 200
 
 # key -> (default, validator)
 SETTINGS = {
@@ -66,13 +68,17 @@ SETTINGS = {
     "tracking.paused": (False, _bool),
     "agent.enabled": (True, _bool),
     "agent.model": ("claude-sonnet-5-5", lambda v: v in ("claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5")),
-    "agent.provider": ("claude", lambda v: v in ("claude", "codex")),
+    "agent.provider": ("claude", lambda v: v in ("claude", "codex", "openai")),
     "agent.codex_model": ("", lambda v: isinstance(v, str) and len(v) < 64),  # "" = Codex's own default
+    "agent.openai_base_url": ("http://127.0.0.1:1234/v1", _url),  # any OpenAI-compatible server (provider "openai")
+    "agent.openai_model": ("", _model),                            # "" = not set up yet
     "agent.heartbeat_s": (900, _num(60, 3600, int)),
     "agent.global_gap_s": (120, _num(10, 1800, int)),
     "agent.trigger_cooldown_s": (600, _num(10, 3600, int)),
     "privacy.local_vision": (True, _bool),          # describe the screen with a local model; pixels never leave the Mac
-    "privacy.local_model": ("gemma4", lambda v: isinstance(v, str) and 0 < len(v) < 80),
+    "privacy.local_model": ("gemma4", lambda v: _model(v) and len(v) > 0),
+    "privacy.vision_backend": ("ollama", lambda v: v in ("ollama", "openai")),  # openai = any OpenAI-compatible server
+    "privacy.vision_base_url": ("http://127.0.0.1:1234/v1", _url),
     "privacy.screen_interval_s": (30, _num(20, 600, int)),
     "agent.max_tool_iterations": (6, _num(1, 10, int)),
     "zen.enabled": (True, _bool),

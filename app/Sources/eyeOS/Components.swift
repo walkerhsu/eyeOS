@@ -96,7 +96,7 @@ struct StatusPills: View {
                 Pill(text: "\(store.providerName) unavailable", icon: "exclamationmark.triangle", color: .orange)
             }
             .buttonStyle(.plain)
-            .help("The \(store.providerName) CLI wasn't found. Click to choose a provider in Settings.")
+            .help("\(store.agentMissing). Click to choose a provider in Settings.")
         } else if !store.setting("agent.enabled") {
             Pill(text: "Agent off", icon: "brain")
         } else if store.status.bool("agent_busy") {

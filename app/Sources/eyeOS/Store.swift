@@ -50,6 +50,7 @@ final class Store: ObservableObject {
     @Published var calibration: J?
     @Published var shortcuts: J?
     @Published var doctor: J?
+    @Published var models: [String: J] = [:]                      // "agent" / "vision" -> what that server lists
     @Published var summary: J?
     @Published var events: [J] = []                                // log feed events (live + history)
     @Published var runs: [Int: RunRow] = [:]
@@ -156,6 +157,7 @@ final class Store: ObservableObject {
             baseline = m.obj("baseline") ?? [:]
         case "shortcuts": shortcuts = m
         case "doctor_eligibility": doctor = m
+        case "models": models[m.str("role") ?? ""] = m
         case "error": lastError = m.str("message")
         default: break
         }
@@ -235,7 +237,17 @@ final class Store: ObservableObject {
     // MARK: - derived
 
     var provider: String { settings.str("agent.provider") ?? "claude" }
-    var providerName: String { provider == "codex" ? "Codex" : "Claude" }
+    var providerName: String {
+        switch provider {
+        case "codex": return "Codex"
+        case "openai": return settings.str("agent.openai_model").flatMap { $0.isEmpty ? nil : $0 } ?? "Custom endpoint"
+        default: return "Claude"
+        }
+    }
+    /// Why the agent can't run, for tooltips.
+    var agentMissing: String {
+        provider == "openai" ? "No model is set for the OpenAI-compatible server" : "The \(providerName) CLI wasn't found"
+    }
     var agentAvailable: Bool { status.bool("agent_available") }
 
     var zen: J { status.obj("zen") ?? [:] }

@@ -18,7 +18,8 @@ import cv2
 
 from . import demo
 from . import tools as T
-from .agent import CLIS, EXERCISES, Agent
+from . import openai_compat as OA
+from .agent import EXERCISES, Agent
 from .blur import StareBlur
 from .db import DB, TRIGGERS, validate_setting
 from .metrics import CHECK, Engine, blink_check, blink_thresholds, classify_dip
@@ -631,7 +632,7 @@ class App:
              "frame_w": self.frame.shape[1] if self.frame is not None else None,
              "frame_h": self.frame.shape[0] if self.frame is not None else None, "demo_mode": self.settings["demo.enabled"],
              "agent_enabled": self.settings["agent.enabled"], "agent_available": self.agent.available(),
-             "agent_provider": self.agent.provider(), "agent_clis": CLIS,
+             "agent_provider": self.agent.provider(), "agent_clis": self.agent.backends(),
              "has_tts_key": bool(os.environ.get("CARTESIA_API_KEY")), "active_app": self.active, "last_action": self.last_action,
              "zen": self.zen.state(time.time()), "today": self.today, "local_vision": self.screen.state()}
         key = json.dumps(s, sort_keys=True, default=str)
@@ -843,12 +844,16 @@ class App:
         elif name == "run_agent_now":
             if not self.agent.available():
                 await self.send({"type": "error", "code": "agent_unavailable",
-                                 "message": f"The {self.agent.provider()} CLI wasn't found. Install it or pick another provider in Settings."})
+                                 "message": "No model is set for the OpenAI-compatible endpoint. Pick one in Settings."
+                                 if self.agent.provider() == "openai" else
+                                 f"The {self.agent.provider()} CLI wasn't found. Install it or pick another provider in Settings."})
             elif not self.agent.busy:
                 # fold in anything queued (e.g. a too_close waiting out the gap) so the manual run sees it
                 queued = list(self.triggers.pending.values())
                 self.triggers.pending.clear()
                 asyncio.create_task(self.agent.run([{"id": "manual", "value": None, "fired_at": time.time()}] + queued))
+        elif name == "list_models":
+            asyncio.create_task(self._list_models(args.get("role")))
         elif name == "check_shortcuts":
             ok, names = await asyncio.to_thread(S.focus_shortcuts_present)
             await self.send({"type": "shortcuts", "focus_ok": ok, "names": names})
@@ -857,6 +862,20 @@ class App:
             await self.send({"type": "doctor_eligibility", "eligible": ok, "detail": why})
         else:
             await self.send({"type": "error", "code": "unknown_command", "message": f"unknown command {name!r}"})
+
+    async def _list_models(self, role):
+        """The models the agent's or the vision model's server offers, for the Settings model picker."""
+        s = self.settings
+        try:
+            if role == "vision" and s["privacy.vision_backend"] == "ollama":
+                models = await self.screen.ollama_models()
+            elif role == "vision":
+                models = await OA.models(s["privacy.vision_base_url"], os.environ.get(OA.VISION_KEY_ENV))
+            else:
+                models = await OA.models(s["agent.openai_base_url"], os.environ.get(OA.AGENT_KEY_ENV))
+            await self.send({"type": "models", "role": role, "models": models})
+        except Exception as e:  # noqa: BLE001 - server down, wrong URL or key: shown next to the picker
+            await self.send({"type": "models", "role": role, "models": [], "error": f"{type(e).__name__}: {e}"[:300]})
 
     async def _summary(self, date):
         try:

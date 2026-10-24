@@ -14,6 +14,7 @@ from pathlib import Path
 import claude_agent_sdk as sdk
 
 from . import learning
+from . import openai_compat as OA
 from . import tools as T
 from .codex import Codex
 from .gym import Gym
@@ -146,8 +147,18 @@ class Agent:
             rule = next(p["rule"] for p in self.db.preferences() if p.get("key") == new[0])
             await self.app.notice("eyeOS learned: " + rule)
 
+    def backends(self):
+        """Where each provider would run, or None when it can't: a CLI path, or the endpoint's model and URL."""
+        s = self.app.settings
+        endpoint = f"{s['agent.openai_model']} at {s['agent.openai_base_url']}" if s["agent.openai_model"] else None
+        return {**CLIS, "openai": endpoint}
+
     def available(self):
-        return bool(CLIS.get(self.provider()))
+        return bool(self.backends().get(self.provider()))
+
+    def _endpoint(self):
+        s = self.app.settings
+        return {"base_url": s["agent.openai_base_url"], "model": s["agent.openai_model"], "key": os.environ.get(OA.AGENT_KEY_ENV)}
 
     # ---------- run ----------
 
@@ -163,9 +174,9 @@ class Agent:
                 db.x("UPDATE events SET run_id=? WHERE id=?", (run_id, tr["event_id"]))
         await app.send({"type": "agent_run", "run_id": run_id, "ts": t0, "phase": "started", "triggers": triggers})
         thinking, texts, usage_in, usage_out, images_sent = [], [], 0, 0, 0
-        codex = self.provider() == "codex"
-        model = s.get("agent.codex_model") or None if codex else s["agent.model"]
-        if not codex and len(self.latencies) >= 3 and statistics.median(self.latencies[-5:]) > 6 and model == "claude-sonnet-5-5":
+        provider = self.provider()
+        model = {"codex": s.get("agent.codex_model") or None, "openai": s["agent.openai_model"]}.get(provider, s["agent.model"])
+        if provider == "claude" and len(self.latencies) >= 3 and statistics.median(self.latencies[-5:]) > 6 and model == "claude-sonnet-5-5":
             model = "claude-haiku-5-5"  # R6: fall back when Sonnet is too slow for the "instant" reaction
         try:
             ctx = await self.context(triggers)
@@ -212,9 +223,15 @@ class Agent:
     async def _stream(self, model, content, run_id, triggers, acted, max_tools):
         """Provider-neutral run: yields ("thinking", s), ("text", s), ("usage", in, out); raises on failure."""
         call = lambda name, args: self._tool_result(run_id, triggers, acted, name, args)
+        tools = [{"name": n, "description": v[0], "inputSchema": v[1]} for n, v in T.CATALOG.items()]
         if self.provider() == "codex":
-            tools = [{"name": n, "description": v[0], "inputSchema": v[1]} for n, v in T.CATALOG.items()]
             async for ev in self.codex.run(SYSTEM, content, tools, call, model):
+                yield ev
+            return
+        if self.provider() == "openai":
+            e = self._endpoint()
+            text = "\n\n".join(b["text"] for b in content if b["type"] == "text")
+            async for ev in OA.run(e["base_url"], model, SYSTEM, text, tools, call, e["key"], max_tools):
                 yield ev
             return
         async for m in self._query(model, content, self._mcp(call), max_tools):
@@ -269,6 +286,9 @@ class Agent:
                                                             model=self.app.settings.get("agent.codex_model") or None)
                    if kind == "text"]
             return (out[-1] if out else "").strip()
+        if self.provider() == "openai":
+            e = self._endpoint()
+            return await OA.complete(e["base_url"], e["model"], system, text, e["key"])
         out = []
         async for m in sdk.query(prompt=text, options=self._options(model or self.app.settings["agent.model"], system, 1)):
             if isinstance(m, sdk.AssistantMessage):

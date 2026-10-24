@@ -25,7 +25,7 @@ struct AgentBoard: View {
                     }
                     .controlSize(.large)
                     .disabled(!store.agentAvailable || store.status.bool("agent_busy"))
-                    .help(store.agentAvailable ? "Run the agent once with the current signals" : "\(store.providerName) CLI not found (see Settings)")
+                    .help(store.agentAvailable ? "Run the agent once with the current signals" : "\(store.agentMissing) (see Settings)")
                 }
                 stats
                 HStack(spacing: 12) {

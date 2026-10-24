@@ -21,7 +21,7 @@ flowchart TB
         refl["<b>Reflection agent</b><br/>display off / next launch"]
     end
 
-    subgraph cloud["Cloud (your Claude or Codex login)"]
+    subgraph cloud["Cloud (your Claude or Codex login) or any OpenAI-compatible server"]
         llm["<b>Reasoning agent</b><br/>picks the action and words it"]
     end
 
@@ -38,14 +38,15 @@ flowchart TB
 | Part | Role | Runs | Code |
 |---|---|---|---|
 | **Detection** | Signal processing, not an LLM: MediaPipe face and hand landmarks → eye and posture metrics and events. Flags problems (low or frequent blinking, leaning in, rubbing…). | on-device, every frame | `metrics.py`, `triggers.py` |
-| **Conductor** (orchestrator) | Local vision model. Every 30 s it reads one screenshot plus the metrics and its previous check, and returns the activity, situation, focus and interruptibility. Turns Zen on and off, and holds nudges during meetings and deep work (rubbing and leaning in still go out). Falls back to rules without Ollama. | on-device, Ollama | `screen_watch.py`, `zen.py` |
-| **Reasoning agent** | The cloud LLM, woken only when the conductor says it's a good moment. Picks the least disruptive action (or none) and writes the message. Every action passes a code-enforced approval check. | Claude Agent SDK or Codex CLI | `agent.py`, `codex.py` |
+| **Conductor** (orchestrator) | Local vision model. Every 30 s it reads one screenshot plus the metrics and its previous check, and returns the activity, situation, focus and interruptibility. Turns Zen on and off, and holds nudges during meetings and deep work (rubbing and leaning in still go out). Falls back to rules without a vision model. | on-device: Ollama, or any OpenAI-compatible server | `screen_watch.py`, `zen.py` |
+| **Reasoning agent** | The cloud LLM, woken only when the conductor says it's a good moment. Picks the least disruptive action (or none) and writes the message. Every action passes a code-enforced approval check. | Claude Agent SDK, Codex CLI, or any OpenAI-compatible server | `agent.py`, `codex.py`, `openai_compat.py` |
 | **Action layer** | Carries out the choice: brightness, dark mode, contrast, text zoom, Focus, windows; overlays (edge glow, break and posture cards, exercises, questions); voice (read aloud, or a spoken summary made by the local model). | on-device | `tools/system.py`, `Overlays.swift`, `tts.py` |
 | **Memory** | Rules sent with every run: learned from outcomes, declines and answers (what helps, what you dislike), plus what reflection writes. | on-device | `learning.py` |
 | **Reflection agent** | When the display turns off (or at the next launch, after a shutdown), reviews the unreflected stretch by hour and by situation, and writes a summary, 2–4 rules and one thing to try. | reasoning agent, numbers only | `reflection.py` |
 
 **Privacy.** Camera frames never leave the Mac. Screenshots are captured into memory, never written to disk, shown
-only to the local model, and wiped after each check. The cloud model gets numbers, the app name, the conductor's
+only to the vision model, and wiped after each check. If you point vision at an OpenAI-compatible server that isn't on this
+Mac, Settings warns that screenshots leave the Mac. The cloud model gets numbers, the app name, the conductor's
 short text and memory rules: no images, window titles or page text. Voice uses macOS `say` unless you add a Cartesia key.
 
 ## Run
@@ -56,6 +57,14 @@ cd ../app && ./scripts/build_app.sh && open build/eyeOS.app
 ```
 
 The app spawns the Python sidecar (`uv run … python -m eyeos`). The reasoning agent uses your own CLI login: Claude through the Claude Agent SDK (its bundled `claude`, or `ANTHROPIC_API_KEY` from Settings → Keys), or Codex through `codex exec` (pick in Settings → Agent). The screen agent needs [Ollama](https://ollama.com) with a vision model (`ollama pull gemma4`) and Screen Recording permission for eyeOS. Without them the agent just works without a screen description. The Cartesia key is optional: without it, voice uses macOS `say`.
+
+**OpenAI-compatible servers (local LLMs).** Both the agent and the screen check can use any server that speaks the
+OpenAI Chat Completions API: LM Studio, Ollama's `/v1`, llama.cpp, MLX (`mlx_lm.server`), vLLM, OpenAI, OpenRouter, or
+a custom URL. Pick it in Settings → Agent → Provider and Settings → Privacy → Vision server. Presets fill in the base URL,
+and the list button shows the server's models. The agent model needs tool calling and the vision model needs image
+input. Each role has its own optional API key in the Keychain, so the agent's key never reaches the vision server.
+With Ollama as the agent server, raise its context (`OLLAMA_CONTEXT_LENGTH=16384`), because its default can be too short
+for the agent's input.
 
 No Xcode needed: the app is a SwiftPM package wrapped into a `.app` by `build_app.sh`.
 

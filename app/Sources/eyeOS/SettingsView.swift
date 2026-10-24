@@ -6,9 +6,9 @@ struct SettingsView: View {
     @EnvironmentObject var store: Store
     @StateVar private var newQuiet = ""
     @StateVar private var cartesia = Keychain.get("cartesia") ?? ""
-    @StateVar private var anthropic = Keychain.get("anthropic") ?? ""
     @StateVar private var codexModel: String?
-    @StateVar private var localModel: String?
+    @StateVar private var agentCustom = false   // "Custom endpoint" picked, even if its URL matches a preset
+    @StateVar private var visionCustom = false
     @StateVar private var confirmResetMemory = false
     @StateVar private var repo = UserDefaults.standard.string(forKey: "sidecar.repo_path") ?? Sidecar.devRepo
 
@@ -93,21 +93,39 @@ struct SettingsView: View {
         }
     }
 
+    /// Claude, Codex, or an endpoint preset (`custom` for any other OpenAI-compatible URL).
+    var agentChoice: Binding<String> {
+        Binding(get: {
+            guard store.provider == "openai" else { return store.provider }
+            return agentCustom ? "custom" : EndpointPreset.matching(store.settings.str("agent.openai_base_url")) ?? "custom"
+        }, set: { id in
+            agentCustom = id == "custom"
+            guard id != "claude", id != "codex" else { return store.set("agent.provider", id) }
+            store.set("agent.provider", "openai")
+            if let p = EndpointPreset.all.first(where: { $0.id == id }) { store.set("agent.openai_base_url", p.url) }
+        })
+    }
+
     var agentCard: some View {
         let clis = store.status.obj("agent_clis") ?? [:]
         let path = clis.str(store.provider)
+        let url = store.settings.str("agent.openai_base_url") ?? ""
         return SettingsCard(title: "Agent", icon: "brain", color: .purple,
-                            subtitle: path != nil ? "Using \(store.providerName) via your CLI login" :
+                            subtitle: store.provider == "openai" ? (path.map { "Using \($0)" } ?? "Pick a server and a model below.") :
+                                path != nil ? "Using \(store.providerName) via your CLI login" :
                                 store.provider == "codex" ? "Codex CLI not found. Install it (`npm i -g @openai/codex`) and run `codex login`."
                                 : "Claude CLI not found. Install Claude Code or add an API key below.") {
             SettingRow("Agent enabled") { Toggle("", isOn: bool("agent.enabled")).labelsHidden().toggleStyle(.switch) }
-            SettingRow("Provider", detail: path.map { "Found at \($0)" } ?? "Not installed") {
-                Picker("", selection: Binding(get: { store.provider }, set: { store.set("agent.provider", $0) })) {
-                    ForEach([("claude", "Claude"), ("codex", "Codex")], id: \.0) { id, name in
-                        Text(clis.str(id) == nil ? "\(name) (not found)" : name).tag(id)
-                    }
+            SettingRow("Provider", detail: store.provider == "openai" ? "Any OpenAI-compatible server; it gets numbers and short text, never images"
+                                           : path.map { "Found at \($0)" } ?? "Not installed") {
+                Picker("", selection: agentChoice) {
+                    Text(clis.str("claude") == nil ? "Claude (not found)" : "Claude").tag("claude")
+                    Text(clis.str("codex") == nil ? "Codex (not found)" : "Codex").tag("codex")
+                    Divider()
+                    ForEach(EndpointPreset.all) { p in Text(p.name).tag(p.id) }
+                    Text("Custom endpoint").tag("custom")
                 }
-                .pickerStyle(.segmented).labelsHidden().frame(width: 220)
+                .labelsHidden().frame(width: 220)
             }
             if store.provider == "codex" {
                 SettingRow("Model", detail: "Leave empty to use Codex's default model") {
@@ -115,6 +133,19 @@ struct SettingsView: View {
                                                              set: { codexModel = $0 }))
                         .textFieldStyle(.roundedBorder).frame(width: 200)
                         .onSubmit { store.set("agent.codex_model", (codexModel ?? "").trimmingCharacters(in: .whitespaces)) }
+                }
+                KeyField("OpenAI API key for Codex (optional; your `codex login` is used otherwise)", account: "codex")
+            } else if store.provider == "openai" {
+                SettingRow("Server URL", detail: "Must serve /v1/chat/completions with tool calling") {
+                    URLField(key: "agent.openai_base_url")
+                }
+                SettingRow("Model", detail: "Needs tool calling, e.g. Qwen 3, gpt-oss, Llama 3.1+") {
+                    ModelField(role: "agent", key: "agent.openai_model", urlKey: "agent.openai_base_url", placeholder: "model id")
+                }
+                KeyField("API key (only if the server needs one, e.g. OpenAI or OpenRouter)", account: "agent_endpoint")
+                if url.contains(":11434") {
+                    Text("Ollama's default context is short: start it with OLLAMA_CONTEXT_LENGTH=16384 or more, "
+                         + "or the agent's input gets cut off.").font(.caption).foregroundStyle(.secondary)
                 }
             } else {
                 SettingRow("Model") {
@@ -124,6 +155,7 @@ struct SettingsView: View {
                     }
                     .labelsHidden().frame(width: 160)
                 }
+                KeyField("Anthropic API key (optional; your `claude` login is used otherwise)", account: "anthropic")
             }
             SettingRow("Try it", detail: "Runs the agent once with the current signals; results show on the Agent page") {
                 Button { store.sidecar.command("run_agent_now"); store.page = .agent } label: {
@@ -144,18 +176,54 @@ struct SettingsView: View {
         }
     }
 
+    /// Native Ollama, or an OpenAI-compatible preset (`custom` for any other URL).
+    var visionChoice: Binding<String> {
+        Binding(get: {
+            guard store.settings.str("privacy.vision_backend") == "openai" else { return "ollama" }
+            return visionCustom ? "custom" : EndpointPreset.matching(store.settings.str("privacy.vision_base_url")) ?? "custom"
+        }, set: { id in
+            visionCustom = id == "custom"
+            guard id != "ollama" else { return store.set("privacy.vision_backend", "ollama") }
+            store.set("privacy.vision_backend", "openai")
+            if let p = EndpointPreset.all.first(where: { $0.id == id }) { store.set("privacy.vision_base_url", p.url) }
+        })
+    }
+
     var privacyCard: some View {
         let v = store.status.obj("local_vision") ?? [:]
+        let ollama = store.settings.str("privacy.vision_backend") != "openai"
+        let offMac = v["on_device"] as? Bool == false
         return SettingsCard(title: "Privacy & on-device vision", icon: "lock.shield", color: .mint,
-                            subtitle: "No webcam frames or screenshots are ever sent to \(store.providerName). A local model on this Mac describes the screen, and only that short text reaches the agent.") {
-            SettingRow("Understand what I'm doing", detail: "A local model checks the screen every 30 s; each screenshot is wiped right after") {
+                            subtitle: "No webcam frames or screenshots are ever sent to \(store.providerName). "
+                                + (offMac ? "The vision model describes the screen, and only that short text reaches the agent."
+                                          : "A local model on this Mac describes the screen, and only that short text reaches the agent.")) {
+            SettingRow("Understand what I'm doing", detail: "A vision model checks the screen every 30 s; each screenshot is wiped right after") {
                 Toggle("", isOn: bool("privacy.local_vision")).labelsHidden().toggleStyle(.switch)
             }
-            SettingRow("Local model", detail: "Any vision model pulled in Ollama (e.g. gemma4, qwen2.5vl)") {
-                TextField("gemma4", text: Binding(get: { localModel ?? store.settings.str("privacy.local_model") ?? "gemma4" },
-                                                 set: { localModel = $0 }))
-                    .textFieldStyle(.roundedBorder).frame(width: 160)
-                    .onSubmit { if let m = localModel?.trimmingCharacters(in: .whitespaces), !m.isEmpty { store.set("privacy.local_model", m) } }
+            SettingRow("Vision server", detail: ollama ? "Ollama on this Mac; started for you if needed" : "Any OpenAI-compatible server") {
+                Picker("", selection: visionChoice) {
+                    Text("Ollama").tag("ollama")
+                    Divider()
+                    ForEach(EndpointPreset.all.filter { $0.id != "ollama" }) { p in Text(p.name).tag(p.id) }
+                    Text("Custom endpoint").tag("custom")
+                }
+                .labelsHidden().frame(width: 220)
+            }
+            if !ollama {
+                SettingRow("Server URL", detail: "Must serve /v1/chat/completions with image input") {
+                    URLField(key: "privacy.vision_base_url")
+                }
+            }
+            SettingRow("Model", detail: ollama ? "Any vision model pulled in Ollama (e.g. gemma4, qwen2.5vl)" : "A vision-capable model on that server") {
+                ModelField(role: "vision", key: "privacy.local_model", urlKey: ollama ? "privacy.vision_backend" : "privacy.vision_base_url",
+                           placeholder: "gemma4")
+            }
+            if !ollama {
+                KeyField("API key (only if the server needs one)", account: "vision_endpoint")
+            }
+            if offMac {
+                Label("Screenshots are sent to \(v.str("host") ?? "that server") and leave this Mac.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.orange)
             }
             SettingRow("Look every") {
                 Stepper("\(store.settings.int("privacy.screen_interval_s") ?? 30) s",
@@ -180,13 +248,12 @@ struct SettingsView: View {
     var keysCard: some View {
         SettingsCard(title: "Keys & voice", icon: "key.fill", color: .orange) {
             SecureField("Cartesia API key (voice narration)", text: $cartesia).textFieldStyle(.roundedBorder)
-            SecureField("Anthropic API key (optional; your `claude` login is used otherwise)", text: $anthropic).textFieldStyle(.roundedBorder)
             TextField("Sidecar repo path", text: $repo).textFieldStyle(.roundedBorder)
             HStack {
+                Text("Agent and vision server keys are under Agent and Privacy.").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Save and restart sidecar") {
                     Keychain.set("cartesia", cartesia)
-                    Keychain.set("anthropic", anthropic)
                     UserDefaults.standard.set(repo, forKey: "sidecar.repo_path")
                     store.sidecar.restart()
                 }
@@ -354,6 +421,112 @@ struct SettingRow<Control: View>: View {
             }
             Spacer()
             control
+        }
+    }
+}
+
+/// Common OpenAI-compatible servers and their default base URLs.
+struct EndpointPreset: Identifiable {
+    let id: String
+    let name: String
+    let url: String
+
+    static let all = [
+        EndpointPreset(id: "lmstudio", name: "LM Studio", url: "http://127.0.0.1:1234/v1"),
+        EndpointPreset(id: "ollama", name: "Ollama", url: "http://127.0.0.1:11434/v1"),
+        EndpointPreset(id: "llamacpp", name: "llama.cpp / MLX", url: "http://127.0.0.1:8080/v1"),
+        EndpointPreset(id: "vllm", name: "vLLM", url: "http://127.0.0.1:8000/v1"),
+        EndpointPreset(id: "openai-api", name: "OpenAI", url: "https://api.openai.com/v1"),
+        EndpointPreset(id: "openrouter", name: "OpenRouter", url: "https://openrouter.ai/api/v1"),
+    ]
+
+    static func matching(_ url: String?) -> String? { all.first { $0.url == url }?.id }
+}
+
+/// A base-URL setting, saved on Return.
+struct URLField: View {
+    @EnvironmentObject var store: Store
+    let key: String
+    @StateVar private var text: String?
+
+    var body: some View {
+        TextField("http://127.0.0.1:1234/v1", text: Binding(get: { text ?? store.settings.str(key) ?? "" }, set: { text = $0 }))
+            .textFieldStyle(.roundedBorder).frame(width: 260)
+            .onSubmit {
+                let u = (text ?? "").trimmingCharacters(in: .whitespaces)
+                if u.hasPrefix("http://") || u.hasPrefix("https://") { store.set(key, u) }
+                text = nil
+            }
+            .onChange(of: store.settings.str(key)) { _, _ in text = nil }  // a preset was picked
+    }
+}
+
+/// A model-id setting, typed or picked from what the server lists (`list_models`).
+struct ModelField: View {
+    @EnvironmentObject var store: Store
+    let role: String
+    let key: String
+    let urlKey: String   // refetch the list when this setting changes
+    let placeholder: String
+    @StateVar private var text: String?
+
+    var body: some View {
+        let m = store.models[role]
+        HStack(spacing: 4) {
+            TextField(placeholder, text: Binding(get: { text ?? store.settings.str(key) ?? "" }, set: { text = $0 }))
+                .textFieldStyle(.roundedBorder).frame(width: 220)
+                .onSubmit { save(text ?? "") }
+            Menu {
+                if m == nil { Text("Loading…") }
+                if let e = m?.str("error") { Text(e) } else if m != nil && m!.arr0("models").isEmpty { Text("No models found") }
+                ForEach(m?.arr0("models") ?? [], id: \.self) { id in Button(id) { save(id) } }
+                Divider()
+                Button("Refresh") { refresh() }
+            } label: { Image(systemName: "list.bullet") }
+            .menuStyle(.borderlessButton).fixedSize().help("Models on this server")
+        }
+        .onAppear(perform: refresh)
+        .onChange(of: store.settings.str(urlKey)) { _, _ in refresh() }
+    }
+
+    func save(_ id: String) {
+        let v = id.trimmingCharacters(in: .whitespaces)
+        if !v.isEmpty || role == "agent" { store.set(key, v) }
+        text = nil
+    }
+
+    func refresh() {
+        store.models[role] = nil
+        store.sidecar.command("list_models", ["role": role])
+    }
+}
+
+/// An API key kept in the Keychain and handed to the sidecar at launch, so saving restarts it.
+struct KeyField: View {
+    @EnvironmentObject var store: Store
+    let label: String
+    let account: String
+    @StateVar private var value: String
+    @StateVar private var saved: String
+
+    init(_ label: String, account: String) {
+        self.label = label
+        self.account = account
+        let v = Keychain.get(account) ?? ""
+        _value = StateVar(initialValue: v)
+        _saved = StateVar(initialValue: v)
+    }
+
+    var body: some View {
+        HStack {
+            SecureField(label, text: $value).textFieldStyle(.roundedBorder)
+            Button("Save") {
+                Keychain.set(account, value)
+                saved = value
+                store.sidecar.restart()
+            }
+            .disabled(value == saved)
+            .help("Saves the key and restarts the sidecar")
         }
     }
 }
