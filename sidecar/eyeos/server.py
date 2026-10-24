@@ -21,6 +21,7 @@ from . import tools as T
 from .agent import CLIS, Agent
 from .db import DB, TRIGGERS, validate_setting
 from .metrics import Engine
+from . import reflection as R
 from .screen_watch import ScreenWatch
 from .tools import system as S
 from .triggers import Triggers
@@ -239,6 +240,15 @@ class App:
                     self.active = await asyncio.to_thread(S.active_app)
                 except Exception:  # noqa: BLE001
                     pass
+            if n % 5 == 0:  # display just went to sleep: the user stepped away, a good time to reflect
+                try:
+                    import Quartz
+                    asleep = bool(Quartz.CGDisplayIsAsleep(Quartz.CGMainDisplayID()))
+                except Exception:  # noqa: BLE001
+                    asleep = False
+                if asleep and not self._display_asleep:
+                    asyncio.create_task(self.maybe_reflect("display_off"))
+                self._display_asleep = asleep
             if n % 30 == 1 or self._screen_now:
                 self._screen_now = False
                 lum, dark = await asyncio.to_thread(S.screen_luma), await asyncio.to_thread(S.dark_mode)
@@ -247,6 +257,8 @@ class App:
 
     _screen_now = False
     _held = set()
+    _display_asleep = False
+    _reflecting = False
 
     def refresh_screen_soon(self):
         self._screen_now = True
@@ -322,6 +334,33 @@ class App:
                 asyncio.create_task(self.zen_recap(info))
         self.today = self.today_stats()
         await self.send_status(force=True)
+
+    # ---------- reflection (display off, or catch-up at launch) ----------
+
+    async def maybe_reflect(self, reason, delay=0, force=False):
+        await asyncio.sleep(delay)
+        if self._reflecting or not self.agent.available():
+            return None
+        ok, since = R.due(self.db)
+        if not ok and not force:
+            return None
+        since = since if ok else (R.last_period_end(self.db) or time.time() - R.LOOKBACK_S)
+        self._reflecting = True
+        try:
+            until = time.time()
+            stats = await asyncio.to_thread(R.gather, self.db, since, until)
+            result = R.parse(await self.agent.complete(R.SYSTEM, json.dumps(stats, default=str)))
+            R.save(self.db, since, until, reason, result, stats)
+            self.log_event("system", None, len(result["rules"]),
+                           {"event": "reflection", "reason": reason, "summary": result["summary"],
+                            "rules": [r["rule"] for r in result["rules"]], "try_next": result.get("try_next")})
+            await self.send_preferences()
+            return result
+        except Exception:  # noqa: BLE001 - the period stays unreflected and is retried next time
+            traceback.print_exc()
+            return None
+        finally:
+            self._reflecting = False
 
     # ---------- conductor (on-device, every 30 s) ----------
 
@@ -629,6 +668,8 @@ class App:
                 await self.screen.describe_now()
                 await self.send_status(force=True)
             asyncio.create_task(go())
+        elif name == "reflect_now":
+            asyncio.create_task(self.maybe_reflect("manual", force=True))
         elif name == "run_agent_now":
             if not self.agent.available():
                 await self.send({"type": "error", "code": "agent_unavailable",
@@ -732,7 +773,8 @@ class App:
         self.done = self.loop.create_future()
         self.thread = threading.Thread(target=self.vision_thread, daemon=True)
         self.thread.start()
-        tasks = [self.tick_5hz(), self.tick_1hz(), self.screen.loop(), self.agent.relearn()]
+        tasks = [self.tick_5hz(), self.tick_1hz(), self.screen.loop(), self.agent.relearn(),
+                 self.maybe_reflect("launch", delay=90)]  # catch up on the period before a shutdown
         if self.print_mode:
             tasks.append(self.print_loop())
         if self.port and not sys.stdin.isatty():

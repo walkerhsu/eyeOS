@@ -222,7 +222,14 @@ struct EventCard: View {
     let e: J
     @StateVar private var expanded = false
 
-    var highlights: [J] { e.obj("details")?.obj("recap")?.arr("highlights") ?? [] }
+    var highlights: [J] {
+        let d = e.obj("details") ?? [:]
+        if let rules = d["rules"] as? [String] {  // a reflection: the rules it learned, plus what to try next
+            return rules.map { ["icon": "brain.head.profile", "text": $0, "level": "warn"] }
+                + (d.str("try_next").map { [["icon": "lightbulb", "text": "Try: " + $0, "level": "good"]] } ?? [])
+        }
+        return d.obj("recap")?.arr("highlights") ?? []
+    }
 
     var body: some View {
         LogCardShell(icon: icon, color: color, title: title, subtitle: subtitle,

@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS baselines    (id INTEGER PRIMARY KEY, ts REAL, data T
 CREATE TABLE IF NOT EXISTS calibration  (id INTEGER PRIMARY KEY, ts REAL, step INTEGER, data TEXT);
 CREATE TABLE IF NOT EXISTS summaries    (date TEXT PRIMARY KEY, ts REAL, text TEXT, stats TEXT, seeded INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS conductor_log (ts REAL PRIMARY KEY, data TEXT);  -- text-only decisions of the on-device conductor
+CREATE TABLE IF NOT EXISTS reflections  (id INTEGER PRIMARY KEY, ts REAL, period_start REAL, period_end REAL, reason TEXT, text TEXT, data TEXT);
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_calls_run ON tool_calls(run_id);
 """

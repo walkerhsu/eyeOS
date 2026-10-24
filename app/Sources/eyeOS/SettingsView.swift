@@ -198,6 +198,12 @@ struct SettingsView: View {
 
     var memoryCard: some View {
         SettingsCard(title: "Memory", icon: "brain.head.profile", color: .pink, subtitle: "Rules the agent has learned about you") {
+            HStack {
+                Text("Reflection runs when the display turns off, and catches up after a shutdown.").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button { store.sidecar.command("reflect_now") } label: { Label("Reflect now", systemImage: "sparkles") }
+                    .disabled(!store.agentAvailable)
+            }
             if store.preferences.isEmpty { Text("Nothing yet.").foregroundStyle(.secondary) }
             ForEach(Array(store.preferences.enumerated()), id: \.offset) { _, p in
                 HStack {
