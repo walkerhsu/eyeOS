@@ -124,7 +124,9 @@ class Agent:
     async def relearn(self):
         """Refresh learned memory rules after anything that teaches us about this user."""
         try:
-            new = learning.apply(self.db, learning.derive(self.db, suppressed=self.app.settings.get("memory.suppressed", [])))
+            s = self.app.settings
+            new = learning.apply(self.db, learning.derive(self.db, suppressed=s.get("memory.suppressed", []),
+                                                          reset_at=s.get("memory.reset_at", 0)))
         except Exception:  # noqa: BLE001 - learning must never break a run
             traceback.print_exc()
             return
@@ -272,7 +274,8 @@ class Agent:
         active = app.active
         recent = db.q("""SELECT c.id, c.ts, c.name AS tool, c.args, c.status, o.metric, o.before, o.after, o.verdict
                          FROM tool_calls c LEFT JOIN outcomes o ON o.call_id = c.id
-                         ORDER BY c.id DESC LIMIT 10""")
+                         WHERE c.ts > ? ORDER BY c.id DESC LIMIT 10""",  # nothing from before a memory reset
+                      (app.settings.get("memory.reset_at", 0),))
         for r in recent:
             r["args"] = json.loads(r["args"] or "{}")
             meta = T.CATALOG.get(r["tool"])

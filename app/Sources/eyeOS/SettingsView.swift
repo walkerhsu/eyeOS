@@ -9,6 +9,7 @@ struct SettingsView: View {
     @StateVar private var anthropic = Keychain.get("anthropic") ?? ""
     @StateVar private var codexModel: String?
     @StateVar private var localModel: String?
+    @StateVar private var confirmResetMemory = false
     @StateVar private var repo = UserDefaults.standard.string(forKey: "sidecar.repo_path") ?? Sidecar.devRepo
 
     private let triggerIds = ["low_blink_rate", "long_stare", "incomplete_blinks", "drowsy", "long_blinks", "sustained_squint",
@@ -203,6 +204,13 @@ struct SettingsView: View {
                 Spacer()
                 Button { store.sidecar.command("reflect_now") } label: { Label("Reflect now", systemImage: "sparkles") }
                     .disabled(!store.agentAvailable)
+                Button(role: .destructive) { confirmResetMemory = true } label: { Label("Reset memory…", systemImage: "arrow.counterclockwise") }
+                    .confirmationDialog("Reset the agent's memory?", isPresented: $confirmResetMemory) {
+                        Button("Reset memory", role: .destructive) { store.sidecar.command("reset_memory") }
+                    } message: {
+                        Text("Every rule is deleted and the agent learns again only from what happens from now on, "
+                             + "so rules you removed before can come back. Your baseline and tool approvals are kept.")
+                    }
             }
             if store.preferences.isEmpty { Text("Nothing yet.").foregroundStyle(.secondary) }
             ForEach(Array(store.preferences.enumerated()), id: \.offset) { _, p in

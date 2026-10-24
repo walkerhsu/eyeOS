@@ -31,13 +31,18 @@ def last_period_end(db):
     return r[0]["e"] if r and r[0]["e"] else None
 
 
-def due(db, now=None):
+def start(db, now=None, reset_at=0):
+    """Where the next reflection's period begins: after the last one, never before a memory reset."""
+    return max(last_period_end(db) or (now or time.time()) - LOOKBACK_S, reset_at)
+
+
+def due(db, now=None, reset_at=0):
     """(True, since) when there's enough unreflected use; else (False, reason)."""
     now = now or time.time()
     last = last_period_end(db)
     if last and now - last < MIN_GAP_S:
         return False, "reflected recently"
-    since = last or now - LOOKBACK_S
+    since = start(db, now, reset_at)
     face_s = db.q("SELECT COUNT(*) n FROM metrics_1hz WHERE ts > ? AND seeded = 0", (since,))[0]["n"]
     if face_s < MIN_FACE_S:
         return False, f"only {face_s // 60} min at the screen since the last reflection"

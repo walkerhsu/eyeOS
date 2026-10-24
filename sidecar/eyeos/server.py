@@ -351,10 +351,11 @@ class App:
         await asyncio.sleep(delay)
         if self._reflecting or not self.agent.available():
             return None
-        ok, since = R.due(self.db)
+        reset_at = self.settings.get("memory.reset_at", 0)
+        ok, since = R.due(self.db, reset_at=reset_at)
         if not ok and not force:
             return None
-        since = since if ok else (R.last_period_end(self.db) or time.time() - R.LOOKBACK_S)
+        since = since if ok else R.start(self.db, reset_at=reset_at)
         self._reflecting = True
         try:
             until = time.time()
@@ -699,6 +700,15 @@ class App:
         elif name == "reset_approvals":
             self.db.x("DELETE FROM approvals")
             await self.send_approvals()
+        elif name == "reset_memory":
+            # forget every rule (learned, reflected, agent-saved) and the evidence behind them, so none come straight back
+            self.db.x("DELETE FROM preferences")
+            self.db.set_setting("memory.suppressed", [])
+            self.db.set_setting("memory.reset_at", time.time())
+            self.settings = self.db.settings()
+            self.log_event("system", None, None, {"event": "reset_memory"})
+            await self.send({"type": "settings", "settings": self.settings})
+            await self.send_preferences()
         elif name == "reset_triggers":
             self.db.reset_settings("triggers.")
             self.settings = self.db.settings()

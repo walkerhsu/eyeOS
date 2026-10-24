@@ -24,6 +24,15 @@ def test_due_needs_enough_unreflected_screen_time(tmp_path):
     assert R.due(db, now + 60)[0] is False  # just reflected
 
 
+def test_reflection_never_reaches_back_past_a_memory_reset(tmp_path):
+    db = DB(tmp_path / "t.db")
+    now = time.time()
+    seed(db, now - 7200, 40)
+    assert R.due(db, now)[0] is True
+    assert R.due(db, now, reset_at=now - 600)[0] is False  # all that use came before the reset
+    assert R.start(db, now, reset_at=now - 600) == now - 600
+
+
 def test_gather_groups_by_situation_and_parse_saves_rules(tmp_path):
     db = DB(tmp_path / "t.db")
     now = time.time()

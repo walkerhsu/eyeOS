@@ -88,6 +88,7 @@ SETTINGS = {
     "audio.speed": (1.0, _num(0.6, 1.5)),
     "demo.enabled": (False, _bool),
     "memory.suppressed": ([], lambda v: isinstance(v, list) and all(_str(x) for x in v)),  # learned keys the user deleted
+    "memory.reset_at": (0, _num(0)),  # last "Reset memory": learning and reflection ignore evidence before it
 }
 for _id, (thr, sus, _, _) in TRIGGERS.items():
     SETTINGS[f"triggers.{_id}.enabled"] = (True, _bool)

@@ -460,7 +460,7 @@ These are sent at 15 fps **only when** setting `ui.show_camera_image == true`.
 |---|---|
 | `ui_response` | `{request_id, result}` |
 | `tool_result` | `{request_id, ok, result \| error}` |
-| `command` | `{name, args?}`, where `name` is one of `pause`, `resume`, `shutdown`, `calibrate {step}`, `reset_approvals`, `seed_demo`, `wipe_demo`, `generate_summary {date?}`, `audio_control {action: pause\|resume\|stop}`, `run_agent_now` (debug), `zen {on: bool}` (start / end Zen manually) |
+| `command` | `{name, args?}`, where `name` is one of `pause`, `resume`, `shutdown`, `calibrate {step}`, `reset_approvals`, `reset_memory` (delete every preference, clear `memory.suppressed`, and set `memory.reset_at` so learning and reflection ignore earlier evidence), `seed_demo`, `wipe_demo`, `generate_summary {date?}`, `audio_control {action: pause\|resume\|stop}`, `run_agent_now` (debug), `zen {on: bool}` (start / end Zen manually) |
 | `set_setting` | `{key, value}` |
 | `get_settings` | `{}` |
 | `get_approvals` | `{}` |
@@ -524,7 +524,7 @@ Settings page (one scrolling column of cards):
 4. **Permissions:** Camera (required), Screen Recording, Accessibility, Automation, each with ✓ or a Grant button that requests and deep-links to the pane.
 5. **Keys & voice:** Cartesia and Anthropic (Keychain), sidecar repo path, Save and restart; Focus Shortcuts check (`shortcuts list` for "eyeOS Focus On/Off"; missing disables `set_focus_mode`).
 6. **Quiet apps:** an editable list.
-7. **Memory:** the preferences the agent saved (deletable) and the current baseline values.
+7. **Memory:** the preferences the agent saved (deletable), **Reset memory…** (confirmed; see `reset_memory`) and the current baseline values.
 8. **Advanced** (collapsed): per-trigger enable / threshold / sustain with reset; the tools table (tier picker, approval state, description) with Reset approvals.
 9. **Demo:** demo mode toggle, Seed history, Wipe seeded data, Run agent now, Run setup again.
 
