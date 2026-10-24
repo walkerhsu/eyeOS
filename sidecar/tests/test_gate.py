@@ -118,3 +118,27 @@ def test_zen_blocks_every_visible_action(tmp_path):
                        ("ask_user", {"question": "ok?", "options": ["yes"]})):
         out, ex = call(app, name, args)
         assert ex == [] and app.asked == [] and "Zen" in out, name
+
+
+def test_exercise_narration_reminds_during_long_steps_and_says_done(tmp_path, monkeypatch):
+    import eyeos.agent as A
+    app = FakeApp(tmp_path, None)
+    spoken = []
+
+    class Speaker:
+        task = None
+
+        async def speak(self, texts):
+            spoken.extend(texts)
+            self.task = asyncio.sleep(0)
+
+        async def stop(self):
+            pass
+    app.speaker = Speaker()
+    agent = Agent(app)
+    monkeypatch.setattr(A, "REMIND_AFTER_S", 0.5)
+    steps = [{"text": "Close your eyes.", "seconds": 1.8}, {"text": "Open slowly.", "seconds": 0.05}]
+    asyncio.run(agent._narrate(steps, "palming"))
+    assert spoken[0] == "Close your eyes."
+    assert any(t.startswith("Keep your eyes closed") and "seconds to go" in t for t in spoken[1:-2])
+    assert spoken[-2] == "Open slowly." and spoken[-1].startswith("The exercise is done")

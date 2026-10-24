@@ -73,6 +73,14 @@ EXERCISES = {
                          ("Keep blinking fully and slowly at your own pace.", 0.25)],
 }
 
+# Spoken every ~10 s during a long step so someone with closed eyes knows to keep going (and how long is left).
+KEEP_GOING = {"palming": "Keep your eyes closed and breathe slowly.", "focus_shift": "Hold your focus there.",
+              "deliberate_blink": "Keep going: close fully, pause, then open slowly."}
+DONE_TEXT = {"palming": "The exercise is done. Open your eyes slowly and blink a few times.",
+             "focus_shift": "The exercise is done. Your eyes can relax now.",
+             "deliberate_blink": "The exercise is done. You can open your eyes and carry on."}
+REMIND_AFTER_S = 10
+
 DOCTOR_TEXT = ("Over the past week your eyes have shown signs often linked to eye strain or dryness ({evidence}). "
                "eyeOS can't diagnose anything, but it might be worth mentioning to an eye doctor or optometrist.")
 
@@ -465,9 +473,7 @@ class Agent:
             return True, "card shown; the camera will verify the break"
         if name == "start_guided_eye_exercise":
             steps = [{"text": t, "seconds": max(3, round(f * a["duration_s"]))} for t, f in EXERCISES[a["type"]]]
-            asyncio.create_task(app.ui_request("exercise", {"type": a["type"], "duration_s": a["duration_s"], "steps": steps},
-                                               a["duration_s"] + 30))
-            asyncio.create_task(self._narrate(steps))
+            asyncio.create_task(self._exercise(a["type"], a["duration_s"], steps))
             return True, f"{a['type']} exercise started ({a['duration_s']} s)"
         if name == "play_ambient_cue":
             res = await app.tool_exec(name, a, 10)
@@ -541,13 +547,33 @@ class Agent:
         if ok:
             self.state["focus_on"] = False
 
-    async def _narrate(self, steps):
+    async def _exercise(self, kind, duration_s, steps):
+        """Run the overlay and the voice together; if the user stops early, the voice stops too."""
+        narration = asyncio.create_task(self._narrate(steps, kind))
+        res = await self.app.ui_request("exercise", {"type": kind, "duration_s": duration_s, "steps": steps}, duration_s + 30)
+        if res is not None and not res.get("completed"):
+            narration.cancel()
+            await self.app.speaker.stop()
+
+    async def _say(self, text):
+        await self.app.speaker.speak([text])
+        await self.app.speaker.task
+
+    async def _narrate(self, steps, kind=None):
+        """Speak each step; during long steps remind every ~10 s with the time left; end with a clear 'done'."""
         try:  # Cartesia voice when a key is set, otherwise macOS `say` on-device
             for st in steps:
-                t = time.time()
-                await self.app.speaker.speak([st["text"]])
-                await self.app.speaker.task
-                await asyncio.sleep(max(0, st["seconds"] - (time.time() - t)))
+                end = time.time() + st["seconds"]
+                await self._say(st["text"])
+                while end - time.time() > REMIND_AFTER_S * 1.3:  # leave room so a reminder never runs into the next step
+                    await asyncio.sleep(REMIND_AFTER_S)
+                    left = round(end - time.time())
+                    if left >= 1:
+                        await self._say(f"{KEEP_GOING.get(kind, 'Keep going.')} {left} seconds to go.")
+                await asyncio.sleep(max(0, end - time.time()))
+            await self._say(DONE_TEXT.get(kind, "The exercise is done."))
+        except asyncio.CancelledError:
+            raise
         except Exception:  # noqa: BLE001 - narration is optional; the overlay still runs
             traceback.print_exc()
 
