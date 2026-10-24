@@ -31,26 +31,32 @@ struct LogView: View {
     var body: some View {
         let all = allItems
         let shown = all.filter { matches($0, filter) }
+        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 12) {
+            AppBar(title: "Log", subtitle: dayLabel) { dayControls }
+            // the day chart stays put: brushing it scrolls the feed below, never the chart itself
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    SectionTitle(text: "Day at a glance", icon: "chart.xyaxis.line")
+                    Spacer()
+                    if let r = range {
+                        Text("\(r.lowerBound.formatted(date: .omitted, time: .shortened)) – \(r.upperBound.formatted(date: .omitted, time: .shortened))")
+                            .font(.caption.monospacedDigit()).foregroundStyle(.teal)
+                        Button { range = nil } label: { Label("Clear", systemImage: "xmark.circle.fill") }
+                            .buttonStyle(.borderless)
+                    } else {
+                        Text("Drag across the chart (or click) to jump to that time").font(.caption).foregroundStyle(.tertiary)
+                    }
+                }
+                Timeline(range: $range).frame(height: 170)
+            }
+            .card(padding: 14)
+        }
+        .padding(.horizontal, 20).padding(.top, 20)
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10, pinnedViews: [.sectionHeaders]) {
-                    AppBar(title: "Log", subtitle: dayLabel) { dayControls }
-                        .padding(.bottom, 4)
                     if let text = store.summary?.str("text") { summaryCard(text) }
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            SectionTitle(text: "Day at a glance", icon: "chart.xyaxis.line")
-                            Spacer()
-                            if range != nil {
-                                Button { range = nil } label: { Label("Clear selection", systemImage: "xmark.circle.fill") }
-                                    .buttonStyle(.borderless)
-                            } else {
-                                Text("Drag across the chart to jump to that time").font(.caption).foregroundStyle(.tertiary)
-                            }
-                        }
-                        Timeline(range: $range).frame(height: 190)
-                    }
-                    .card(padding: 14)
                     Section {
                         ForEach(shown) { item in
                             switch item {
@@ -66,7 +72,7 @@ struct LogView: View {
                         filterBar(all).padding(.vertical, 8).background(.background)
                     }
                 }
-                .padding(20)
+                .padding(.horizontal, 20).padding(.bottom, 20)
             }
             .onChange(of: range) {
                 // brushing the chart jumps the feed to that moment and opens the run there
@@ -75,6 +81,7 @@ struct LogView: View {
                     withAnimation { proxy.scrollTo(first.id, anchor: .top) }
                 }
             }
+        }
         }
         .onChange(of: store.logDay) { store.loadDay() }
         .onChange(of: store.summary?.str("text")) { summarizing = false }
@@ -550,6 +557,7 @@ struct Timeline: View {
             series("PERCLOS", rows, "perclos", .purple)
             series("Distance cm", rows, "distance_cm", .orange)
         }
+        .onChange(of: range) { if range == nil { selection = nil } }
     }
 
     func series(_ title: String, _ rows: [J], _ key: String, _ color: Color, markers: Bool = false) -> some View {
@@ -588,9 +596,27 @@ struct Timeline: View {
         .chartXScale(domain: dayDomain)
         .chartYAxis { AxisMarks(position: .leading) }
         .chartLegend(.hidden)
-        .chartOverlay { _ in Text(title).font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing) }
-        .chartXSelection(range: $selection)
-        .onChange(of: selection) { if let s = selection { range = s } }
+        .chartOverlay { proxy in
+            GeometryReader { geo in
+                ZStack(alignment: .topTrailing) {
+                    Rectangle().fill(.clear).contentShape(Rectangle())
+                        .gesture(DragGesture(minimumDistance: 0).onChanged { v in
+                            // draw the selection while dragging; only commit (and move the feed) on release
+                            guard let plot = proxy.plotFrame else { return }
+                            let x0 = v.startLocation.x - geo[plot].minX, x1 = v.location.x - geo[plot].minX
+                            if let a: Date = proxy.value(atX: min(x0, x1)), let b: Date = proxy.value(atX: max(x0, x1)) {
+                                selection = a...b
+                            }
+                        }.onEnded { v in
+                            guard let s = selection else { return }
+                            // a click (no real drag) selects a few minutes around that moment
+                            range = abs(v.translation.width) < 4
+                                ? s.lowerBound.addingTimeInterval(-120)...s.lowerBound.addingTimeInterval(120) : s
+                        })
+                    Text(title).font(.caption2).foregroundStyle(.secondary).allowsHitTesting(false)
+                }
+            }
+        }
     }
 
     var dayDomain: ClosedRange<Date> {
