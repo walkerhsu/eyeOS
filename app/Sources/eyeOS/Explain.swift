@@ -113,9 +113,9 @@ enum Explain {
 
     static let blinkRate = Explainer(
         title: "Blink rate",
-        meaning: "Full blinks per minute, judged against your own normal. Too few dries the eyes (screens can cut blinking from about 17 to 4–7 a minute). Too many can mean they already feel dry or irritated. A steady slide over 10+ minutes is a fatigue sign.",
+        meaning: "Blinks per minute, full or half, judged against your own normal (how fully you blink is its own card). Too few dries the eyes (screens can cut blinking from about 17 to 4–7 a minute). Too many can mean they already feel dry or irritated. A steady slide over 10+ minutes is a fatigue sign.",
         math: """
-        full blinks ÷ minutes your face was present and you weren't talking (last 60 s)
+        (full + incomplete blinks) ÷ minutes your face was present and you weren't talking (last 60 s)
         band: low < max(8, 0.6 × normal), high > max(25, 1.6 × normal)
         normal = calibrated rate, clamped to 10–25
         slide: per-minute rates over 12 min fall ≥ 20 % (≥ 3/min), steadily
@@ -126,7 +126,7 @@ enum Explain {
     static let incomplete = Explainer(
         title: "Incomplete blinks",
         meaning: "The share of blinks where your lids started to close but didn't meet. Half blinks don't spread the tear film well.",
-        math: "incomplete ÷ (full + incomplete) over the last 60 s\n\nIncomplete = openness dipped below 75 % but never below 20 %, bottoming out under 60 %. Needs at least 5 blinks.",
+        math: "incomplete ÷ (full + incomplete) over the last 60 s\n\nFull = the lids closed at least 80 % as far as your calibration blinks (openness ≤ 35 % before calibrating). Incomplete = 40–80 % as far (bottoming out under 60 %), within 0.5 s; slower shallow dips are glances, not blinks. Needs at least 5 blinks.",
         good: "Under 25 % is green, 25–40 % amber, above 40 % red.")
 
     static let stare = Explainer(

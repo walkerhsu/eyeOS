@@ -143,8 +143,8 @@ final class Store: ObservableObject {
         case "calibration":
             calibration = m
             // the blink baseline runs after setup closes, so a weak result is reported in a banner
-            if m.int("step") == 3, m.str("phase") == "done", let w = (m["warnings"] as? [String])?.first {
-                overlays.showWeakBaseline(w)
+            if m.int("step") == 3, m.str("phase") == "done", let w = m["warnings"] as? [String], !w.isEmpty {
+                overlays.showWeakBaseline(setting("demo.enabled") ? calibrationUnexpected : w.joined(separator: " "))
             }
         case "history": applyHistory(m)
         case "summary":

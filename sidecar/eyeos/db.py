@@ -85,6 +85,7 @@ SETTINGS = {
     "advanced.perclos_o": (0.20, _num(0, 1)),
     "advanced.incomplete_max_o": (0.60, _num(0, 1)),
     "advanced.long_blink_s": (0.5, _num(0.1, 3)),
+    "advanced.incomplete_max_s": (0.5, _num(0.1, 3)),
     "advanced.real_break_s": (20, _num(5, 300, int)),
     "audio.voice_id": ("", _str),  # empty = first voice from the Cartesia voices API
     "audio.speed": (1.0, _num(0.6, 1.5)),

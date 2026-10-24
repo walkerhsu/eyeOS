@@ -334,7 +334,7 @@ struct EventCard: View {
     /// calibration, calibration_weak / _failed / _error / _interrupted, one per step
     var isCalibration: Bool { e.str("kind") == "system" && event.hasPrefix("calibration") }
     var calibrationStep: String {
-        switch e.obj("details")?.int("step") { case 1: "distance"; case 2: "gaze"; default: "blink baseline" }
+        switch e.obj("details")?.int("step") { case 1: "distance"; case 2: "gaze"; case 4: "blink check"; default: "blink baseline" }
     }
 
     var icon: String {

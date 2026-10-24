@@ -206,18 +206,25 @@ Classification on dip end, with `frames = number of frames in DIP`:
 | Condition | Result |
 |---|---|
 | `frames < 2` | noise, ignored |
-| `min_o ≤ 0.35` | **complete blink**, `duration = end − start` |
-| `0.35 < min_o ≤ 0.60` | **incomplete blink** |
-| `min_o > 0.60` | noise, ignored |
+| `min_o ≤ complete_o` (0.35) | **complete blink**, `duration = end − start` |
+| `complete_o < min_o ≤ incomplete_max_o` (0.60) and `duration ≤ 0.5 s` | **incomplete blink** |
+| otherwise | noise, ignored (a slow shallow dip is a glance down at the keyboard, not a blink) |
 | complete blink with `duration > 0.5 s` | also flagged **long blink** (fatigue) |
 
-The 2-frame minimum matches the "below threshold for 2–3 frames" rule. The complete-blink line is 0.35, not the textbook 0.20 (lids ≥ 80% closed): a natural blink lasts 100–150 ms, so at 30 fps the 1–2 frames at its bottom rarely catch full closure, and with the eye only ~12 px of iris wide the lid landmarks are coarse. Recorded natural blinks bottomed out at 0.2–0.4, while only slow, deliberate blinks reached 0.20 (measure your own with `sidecar/scripts/blink_report.py`). PERCLOS keeps 0.20 (`perclos_o`), since sustained closure does reach it. Threshold constants live in settings (§8) under `advanced.*`.
+The 2-frame minimum matches the "below threshold for 2–3 frames" rule. The default complete-blink line is 0.35, not the textbook 0.20 (lids ≥ 80% closed): a natural blink lasts 100–150 ms, so at 30 fps the 1–2 frames at its bottom rarely catch full closure, and with the eye only ~12 px of iris wide the lid landmarks are coarse. Recorded natural blinks bottomed out at 0.2–0.4, while only slow, deliberate blinks reached 0.20 (measure your own with `sidecar/scripts/blink_report.py`). PERCLOS keeps 0.20 (`perclos_o`), since sustained closure does reach it. Threshold constants live in settings (§8) under `advanced.*`.
+
+**Per-user thresholds.** The calibration blink check (§7) replaces `complete_o` and `incomplete_max_o` with the user's own, stored in the baseline. With `depth` = the median `min_o` of the three prompted blinks and `closure = 1 − depth`:
+```
+complete_o       = max(1 − 0.8 · closure, advanced.complete_o)          # closes ≥ 80 % as far as the prompted blinks
+incomplete_max_o = min(max(1 − 0.4 · closure, advanced.incomplete_max_o), dip_start_o − 0.05)   # 40–80 %
+```
+They only ever loosen the defaults: prompted blinks close a little deeper than natural ones, so a camera that sees the lids fully meet would otherwise ask more of natural blinks than they reach.
 
 Derived metrics:
 
 | Metric | Definition | Window |
 |---|---|---|
-| `blink_rate` | complete blinks ÷ face-present minutes | rolling 60 s |
+| `blink_rate` | (complete + incomplete) blinks ÷ face-present minutes. How fully you blink is `incomplete_pct`'s job. | rolling 60 s |
 | `incomplete_rate` | incomplete blinks per minute | rolling 60 s |
 | `incomplete_pct` | incomplete ÷ (complete + incomplete) | rolling 60 s (needs ≥ 5 dips, else null) |
 | `blink_duration_ms` | mean duration of complete blinks | rolling 60 s |
@@ -422,7 +429,7 @@ These are sent at 15 fps **only when** setting `ui.show_camera_image == true`.
 | `ui_request` | `{request_id, kind, payload, timeout_s}` | when a UI tool runs |
 | `ui_dismiss` | `{request_id}` | e.g. audio finished |
 | `tool_exec` | `{request_id, name, args}` | Swift-executed tools (calendar) |
-| `calibration` | `{step, phase: "started"\|"progress"\|"done"\|"failed", progress, result?}` | during calibration |
+| `calibration` | `{step, phase: "started"\|"progress"\|"done"\|"failed", progress, result?, warnings?, blinks?}` (`blinks`: prompted blinks seen so far, step 4 only) | during calibration |
 | `history` | `{request_id, rows:[…], kind}` | reply |
 | `summary` | `{date, text, stats}` | reply |
 | `settings` | `{settings}` | reply / on change |
@@ -476,12 +483,15 @@ Python validates every inbound message: unknown types get an `error` reply, and 
 
 Setup is kept to what tracking needs. Keys, permissions other than the camera, and Focus Shortcuts are optional and live in Settings (§8).
 
-1. **Welcome:** one line ("Looks after your eyes while you work.") and three icon rows: video stays on your Mac, 15-second calibration, silent while you're in deep focus. **Get started** requests camera access natively (`AVCaptureDevice.requestAccess`) and restarts the sidecar on first grant. If access is denied, show a deep link to `…Privacy_Camera`. **Skip** marks setup done without calibrating; the Live header then shows "Not calibrated · set up".
+1. **Welcome:** one line ("Looks after your eyes while you work.") and three icon rows: video stays on your Mac, 20-second calibration, silent while you're in deep focus. **Get started** requests camera access natively (`AVCaptureDevice.requestAccess`) and restarts the sidecar on first grant. If access is denied, show a deep link to `…Privacy_Camera`. **Skip** marks setup done without calibrating; the Live header then shows "Not calibrated · set up".
 2. **Calibration step 1 (distance, 3 s):** illustration (person ↔ ≈ 60 cm ↔ laptop), "Sit back at arm's length". Collect 3 s of iris widths and take the median as `w_px_cal`; `calibration.distance_cm` is the assumed distance.
 3. **Calibration step 2 (gaze, 10 s):** a full-screen dot at the center, then the four corners, 2 s each. Record `gx`, `gy`, yaw and pitch. The center pose becomes the head-pose zero, and the corner extremes give `cal_gx_min/max` and `cal_gy_min/max`.
-4. **Done:** "You're set". **Start using eyeOS** closes the sheet and starts **calibration step 3 (baseline, 60 s) in the background**: the median open-state EAR (`EAR_open_baseline`), `squint_score_baseline`, blink rate and blink duration. The Live header shows "Learning your normal blink rate · Ns" until it finishes, and `calibrated` becomes true.
+4. **Calibration step 4 (blink check, ≤ 8 s):** "Blink 3 times normally, about a second apart. Click Start when you're ready." Three eye icons tick off as each blink is seen (`blinks` in the progress messages); the step ends 0.6 s after the third. Blinks are found in the raw EAR against this step's own open-eye level (the median EAR of the open frames between blinks), so a stale baseline can't hide them: a dip reaching `o ≤ 0.60` is a blink, one longer than 1 s was held shut and is left out. The step saves that open-eye level as `EAR_open_baseline` and sets the per-user `complete_o` / `incomplete_max_o` (§4.3), both applied before the baseline starts. Step 4 is numbered after the baseline so earlier logged steps keep their meaning; it runs after step 2.
+   - **Fails** (nothing saved, the previous thresholds stay, **Try again**): face visible < 80% of the step; fewer than 2 blinks ("We didn't see your blinks…"); median blink depth above 0.45 ("We couldn't see your eyes close clearly…"), where blinks can't be told from glances.
+   - **Warns** (saved; **Continue anyway** or **Try again**): only 2 blinks, more than 3, depths more than 0.25 apart, a blink held shut, or the camera below 15 fps.
+5. **Done:** "You're set". **Start using eyeOS** closes the sheet and starts **calibration step 3 (baseline, 60 s) in the background**: the median open-state EAR (`EAR_open_baseline`), `squint_score_baseline`, blink rate and blink duration. The window's dips are rescaled to the new open-eye level and reclassified before counting. The Live header shows "Learning your normal blink rate · Ns" until it finishes, and `calibrated` becomes true. Fewer than 3 blinks, or a camera below 15 fps, is a warning.
 
-Each calibration step shows a live "Face found" check; **Start** is disabled until a face is visible. The step shows a progress ring while running and advances automatically on `done`. If a step fails (no face for > 50% of the step), the `calibration` message reports `failed` with a reason and the step offers **Try again**. A failed background baseline shows "Baseline failed · retry" in the Live header.
+Each calibration step shows a live "Face found" check; **Start** is disabled until a face is visible. The step shows a progress ring while running and advances automatically on `done`. If a step fails (no face for > 50% of the step), the `calibration` message reports `failed` with a reason and the step offers **Try again**. A failed background baseline shows "Baseline failed · retry" in the Live header. Warnings are specific, except in demo mode, where they read "We noticed some unexpected things during calibration that may affect the quality of the calibration. We suggest you try again." The blink check's warnings stay specific even in demo mode, since they say what to do differently ("Blink at your normal speed"). Steps 3 and 4 keep every dip they saw (`t`, `min_o`, `duration`, `kind`) in their `calibration` row, and in the event when step 4 fails, for tuning the thresholds.
 
 **Recalibrate** (Settings → Camera, or the Live header pill) opens the same sheet at step 1.
 
@@ -511,7 +521,7 @@ Settings live in the SQLite `settings` table (key → JSON value), owned by Pyth
 | `zen.enter_min` | number 1–60 | 10 | minutes of sustained focus before auto Zen |
 | `quiet_apps` | [bundle id \| title substring] | see §9.4 | UI tools suppressed |
 | `calibration.distance_cm` | number | 60 | |
-| `advanced.dip_start_o` / `dip_end_o` / `complete_o` / `perclos_o` / `incomplete_max_o` / `long_blink_s` | numbers | 0.75 / 0.85 / 0.35 / 0.20 / 0.60 / 0.5 | |
+| `advanced.dip_start_o` / `dip_end_o` / `complete_o` / `perclos_o` / `incomplete_max_o` / `long_blink_s` / `incomplete_max_s` | numbers | 0.75 / 0.85 / 0.35 / 0.20 / 0.60 / 0.5 / 0.5 | `complete_o` / `incomplete_max_o` are the defaults until the blink check sets the user's own |
 | `advanced.real_break_s` | int | 20 | |
 | `audio.voice_id` | str | a Cartesia default voice | |
 | `audio.speed` | number | 1.0 | |

@@ -17,8 +17,16 @@ DEFAULT_ADV = {"dip_start_o": 0.75, "dip_end_o": 0.85,
                "complete_o": 0.35,        # quick natural blinks bottom out at 0.2-0.4 at 30 fps; only slow ones reach 0.2
                "perclos_o": 0.20,         # PERCLOS "closed" = lids >= 80% shut; sustained closure does reach it
                "incomplete_max_o": 0.60, "long_blink_s": 0.5, "real_break_s": 20,
+               "incomplete_max_s": 0.5,   # longer shallow dips are glances down (keyboard), not blinks
                "talk_jaw_std": 0.035,     # jaw-open std over 2 s above this = speaking (talking raises blink rate ~50%)
                "trend_window_min": 12}    # blink-rate decline window
+
+# calibration's blink check (SPEC §7): three prompted blinks show how far this user's blinks close on this camera
+CHECK = {"blink_o": 0.60,     # a prompted dip must get this low to count as a blink
+         "held_s": 1.0,       # longer = eyes held shut, not a normal blink
+         "max_min_o": 0.45,   # median depth above this: blinks can't be told from glances
+         "complete": 0.80,    # complete blink: closes >= 80 % as far as the prompted blinks
+         "incomplete": 0.40}  # incomplete blink: 40-80 %; less is noise
 
 DEFAULT_CAL = {"ear_open": 0.28, "squint_score": 0.0, "w_px_cal": None, "distance_cm": 60,
                "yaw0": 0.0, "pitch0": 0.0, "roll0": 0.0,
@@ -102,11 +110,57 @@ def verdict(metric, before, after, face_frac=1.0):
     return "neutral"
 
 
+def threshold(adv, cal, k):
+    """complete_o / incomplete_max_o: the user's own from the blink check, else the advanced.* default."""
+    return cal.get(k) or adv[k]
+
+
+def classify_dip(min_o, duration, adv, cal):
+    """'blink', 'incomplete' or None (noise) for a finished dip."""
+    if min_o <= threshold(adv, cal, "complete_o"):
+        return "blink"
+    if min_o <= threshold(adv, cal, "incomplete_max_o") and duration <= adv["incomplete_max_s"]:
+        return "incomplete"
+    return None
+
+
+def blink_check(samples, adv):
+    """Find calibration's prompted blinks in raw EAR, so a stale baseline can't hide them.
+    Returns {ear_open, blinks, held}; each dip is {end, duration, min_o} with min_o relative to this ear_open."""
+    ears = [s["ear"] for s in samples if s.get("ear") is not None]
+    if not ears:
+        return {"ear_open": None, "blinks": [], "held": []}
+    m = statistics.median(ears)
+    ear_open = statistics.median(e for e in ears if e > 0.75 * m)  # open frames between the blinks
+    det = DipDetector({**adv, "complete_o": CHECK["blink_o"]})
+    blinks, held = [], []
+    for s in samples:
+        if s.get("ear") is None:
+            continue
+        ev = det.update(s["ts"], openness(s["ear"], ear_open))
+        if ev:
+            d = {"end": ev["end"], "duration": round(ev["duration"], 3), "min_o": round(ev.get("min_o", 0.0), 3)}
+            (held if ev["kind"] == "eyes_closed" or ev["duration"] > CHECK["held_s"] else blinks).append(d)
+    return {"ear_open": ear_open, "blinks": blinks, "held": held}
+
+
+def blink_thresholds(blinks, adv):
+    """complete_o / incomplete_max_o scaled to how far the prompted blinks closed (median).
+    Never stricter than the defaults: prompted blinks close deeper than natural ones, so a camera that sees lids
+    fully meet would otherwise demand more than natural blinks reach."""
+    closure = 1 - statistics.median(b["min_o"] for b in blinks)
+    complete = max(1 - CHECK["complete"] * closure, adv["complete_o"])
+    incomplete = min(max(1 - CHECK["incomplete"] * closure, adv["incomplete_max_o"]),
+                     adv["dip_start_o"] - 0.05)  # a dip must start above it
+    return {"complete_o": round(complete, 3), "incomplete_max_o": round(max(incomplete, complete), 3)}
+
+
 # ---------- dip state machine (§4.3) ----------
 
 class DipDetector:
-    def __init__(self, adv):
+    def __init__(self, adv, cal=None):
         self.adv = adv
+        self.cal = {} if cal is None else cal
         self.state = "OPEN"
         self.start = 0.0
         self.min_o = 1.0
@@ -138,10 +192,11 @@ class DipDetector:
         if self.frames < 2:
             return None
         dur = end - self.start
-        if self.min_o <= a["complete_o"]:
+        kind = classify_dip(self.min_o, dur, a, self.cal)
+        if kind == "blink":
             return {"kind": "blink", "start": self.start, "end": end, "duration": dur,
                     "min_o": self.min_o, "long": dur > a["long_blink_s"]}
-        if self.min_o <= a["incomplete_max_o"]:
+        if kind == "incomplete":
             return {"kind": "incomplete", "start": self.start, "end": end, "duration": dur, "min_o": self.min_o}
         return None
 
@@ -152,7 +207,7 @@ class Engine:
     def __init__(self, cal=None, adv=None, today_s=0.0):
         self.cal = {**DEFAULT_CAL, **(cal or {})}
         self.adv = {**DEFAULT_ADV, **(adv or {})}
-        self.dip = DipDetector(self.adv)
+        self.dip = DipDetector(self.adv, self.cal)
         self.frames = deque()        # (ts, face_present, closed, on_screen, talking) for 60 s
         self.blinks = deque()        # (end_ts, duration, long, talking)
         self.incompletes = deque()   # (end_ts, talking)
@@ -262,6 +317,7 @@ class Engine:
                     self.incompletes.append((t, t < self.talk_until))
                 if ev["kind"] in ("blink", "incomplete"):
                     self.stare_acc = 0.0
+                    sample["dip"] = ev  # calibration keeps every dip it saw
                 events.append(ev)
             if self.dip.state == "OPEN" and on_screen:
                 self.stare_acc += dt
@@ -375,13 +431,14 @@ class Engine:
         return delta > 0.15 or ratio < 0.80
 
     def _blink_stats(self):
-        """(blink_rate, incomplete_pct, quiet_min) over the last 60 s, counting only time you weren't talking."""
+        """(blink_rate, incomplete_pct, quiet_min) over the last 60 s, counting only time you weren't talking.
+        The rate counts every blink, complete or not; incomplete_pct says how many fell short."""
         quiet = sum(1 for x in self.frames if x[1] and not x[4])
         span = (self.frames[-1][0] - self.frames[0][0]) if len(self.frames) > 1 else 0
         quiet_min = (quiet / len(self.frames)) * span / 60 if self.frames else 0
         n_blink = sum(1 for b in self.blinks if not b[3])
         n_inc = sum(1 for i in self.incompletes if not i[1])
-        rate = n_blink / quiet_min if quiet_min > 0.25 else None  # need >= 15 s of quiet face time
+        rate = (n_blink + n_inc) / quiet_min if quiet_min > 0.25 else None  # need >= 15 s of quiet face time
         pct = n_inc / (n_blink + n_inc) if n_blink + n_inc >= 5 else None
         return rate, pct, quiet_min
 

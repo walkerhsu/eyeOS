@@ -61,6 +61,16 @@ def test_quick_natural_blink_is_complete():
     assert [e["kind"] for e in ev] == ["blink"]
 
 
+def test_slow_shallow_dip_is_a_glance_not_a_blink():
+    assert run_dips([1] + [0.5] * 20 + [1]) == []  # 0.67 s half-closed: looking down at the keyboard
+
+
+def test_blink_check_thresholds_win_over_defaults():
+    d = M.DipDetector(ADV, {"complete_o": 0.45, "incomplete_max_o": 0.70})
+    ev = [d.update(i / 30, o) for i, o in enumerate([1, 0.6, 0.42, 0.7, 1, 0.6, 0.65, 0.7, 1])]
+    assert [e["kind"] for e in ev if e] == ["blink", "incomplete"]
+
+
 def test_very_shallow_dip_is_noise():
     assert run_dips([1, 0.7, 0.65, 0.7, 1]) == []
 
@@ -129,6 +139,40 @@ def test_engine_blink_rate_and_stare():
     assert s["longest_stare_s"] == pytest.approx(5.8, abs=0.3)
     assert s["perclos"] == pytest.approx(0.2 / 6, abs=0.02)
     assert s["distance_cm"] is not None
+
+
+def test_blink_rate_counts_incomplete_blinks():
+    eng = M.Engine()
+    # every 6 s a quick dip that only half closes: still a blink for the rate, all of them incomplete
+    evs, _ = _feed(eng, 1000.0, 60.5, lambda s: 0.5 if (s % 6) > 5.85 else 1.0)
+    s = eng.snapshot()
+    assert sum(e["kind"] == "incomplete" for e in evs) == 10
+    assert s["blink_rate"] == pytest.approx(10, abs=1)
+    assert s["incomplete_pct"] == 1.0
+
+
+def _check_samples(o_fn, seconds=4.0, fps=30, ear_open=0.30):
+    return [{"ts": i / fps, "present": True, "ear": ear_open * o_fn(i / fps)} for i in range(int(seconds * fps))]
+
+
+def test_blink_check_finds_prompted_blinks_in_raw_ear():
+    # three quick blinks to 0.3 and one held for 1.5 s, against an open EAR the old baseline never saw
+    def o(s):
+        if any(b <= s < b + 0.13 for b in (0.5, 1.5, 2.5)):
+            return 0.3
+        return 0.1 if 3.5 <= s < 5.0 else 1.0
+    check = M.blink_check(_check_samples(o, seconds=6), ADV)
+    assert check["ear_open"] == pytest.approx(0.30)
+    assert [b["min_o"] for b in check["blinks"]] == [0.3, 0.3, 0.3]
+    assert len(check["held"]) == 1
+
+
+def test_blink_thresholds_scale_with_depth_but_never_tighten():
+    th = lambda depth: M.blink_thresholds([{"min_o": depth}] * 3, ADV)
+    assert th(0.30) == {"complete_o": 0.44, "incomplete_max_o": 0.70}  # 0.72 capped below dip start
+    assert th(0.40) == {"complete_o": 0.52, "incomplete_max_o": 0.70}
+    # a camera that sees lids meet: 0.24 would be stricter than natural blinks reach, so the default stands
+    assert th(0.05) == {"complete_o": ADV["complete_o"], "incomplete_max_o": 0.62}
 
 
 def test_perclos_counts_only_near_closed_frames():

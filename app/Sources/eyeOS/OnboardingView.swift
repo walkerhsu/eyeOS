@@ -1,8 +1,11 @@
 import AVFoundation
 import SwiftUI
 
-/// First-run setup: welcome, then two short calibrations. The 60 s blink baseline (calibration step 3)
-/// runs in the background after the sheet closes; the Live header shows its progress.
+/// Demo mode keeps calibration warnings vague (except the blink check's); otherwise they say what went wrong.
+let calibrationUnexpected = "We noticed some unexpected things during calibration that may affect the quality of the calibration."
+
+/// First-run setup: welcome, then three short calibrations (distance, gaze, blink check). The 60 s blink
+/// baseline (calibration step 3) runs in the background after the sheet closes; the Live header shows its progress.
 /// Keys, Shortcuts and extra permissions live in Settings and are only needed for optional features.
 struct OnboardingView: View {
     @EnvironmentObject var store: Store
@@ -16,7 +19,7 @@ struct OnboardingView: View {
             HStack {
                 if page > 0 { dots }
                 Spacer()
-                if page < 3 {
+                if page < 4 {
                     Button(recalibrating ? "Cancel" : "Skip", action: cancel).buttonStyle(.borderless).foregroundStyle(.secondary)
                 }
             }
@@ -26,6 +29,7 @@ struct OnboardingView: View {
                 case 0: welcome
                 case 1: distanceStep
                 case 2: gazeStep
+                case 3: blinkStep
                 default: finished
                 }
             }
@@ -38,7 +42,7 @@ struct OnboardingView: View {
 
     var dots: some View {
         HStack(spacing: 6) {
-            ForEach(1...3, id: \.self) { i in
+            ForEach(1...4, id: \.self) { i in
                 Capsule().fill(i <= page ? Color.teal : Color.white.opacity(0.15)).frame(width: i == page ? 22 : 8, height: 8)
             }
         }
@@ -66,7 +70,7 @@ struct OnboardingView: View {
             }
             VStack(alignment: .leading, spacing: 14) {
                 feature("lock.shield.fill", .green, "Video stays on your Mac")
-                feature("timer", .teal, "15-second calibration")
+                feature("timer", .teal, "20-second calibration")
                 feature("moon.stars.fill", .indigo, "Silent while you're in deep focus")
             }
             .padding(.vertical, 6)
@@ -142,6 +146,25 @@ struct OnboardingView: View {
         }
     }
 
+    /// Calibration step 4: three prompted blinks set this user's complete / incomplete blink thresholds.
+    var blinkStep: some View {
+        CalibrationStep(step: 4, title: "Blink 3 times", subtitle: "Blink 3 times normally, about a second apart. Click Start when you're ready.",
+                        next: { page = 4 }) {
+            let c = store.calibration?.int("step") == 4 ? store.calibration : nil
+            let seen = c?.str("phase") == "failed" ? 0 : c?.int("blinks") ?? 0
+            HStack(spacing: 22) {
+                ForEach(0..<3, id: \.self) { i in
+                    Image(systemName: i < seen ? "checkmark" : "eye")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundStyle(i < seen ? Color.mint : Color.primary.opacity(0.85))
+                        .frame(width: 64, height: 64)
+                        .background((i < seen ? Color.mint : Color.white).opacity(0.12), in: Circle())
+                }
+            }
+            .animation(.easeInOut(duration: 0.2), value: seen)
+        }
+    }
+
     var finished: some View {
         VStack(spacing: 20) {
             Spacer()
@@ -208,7 +231,9 @@ struct CalibrationStep<Art: View>: View {
                 VStack(spacing: 6) {
                     Label("Saved, though it may be a little off", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.yellow).font(.callout.weight(.semibold))
-                    Text(warnings.joined(separator: " ") + " For the best tracking, try this step again.")
+                    // the blink check's warnings say what to do differently, so they stay specific even in demo mode
+                    Text(store.setting("demo.enabled") && step != 4 ? calibrationUnexpected + " We suggest you try again."
+                         : warnings.joined(separator: " ") + " For the best tracking, try this step again.")
                         .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 400)
                 }
                 HStack(spacing: 14) {
