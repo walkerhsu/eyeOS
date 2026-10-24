@@ -13,7 +13,9 @@ L_EAR = (362, 385, 387, 263, 373, 380)
 FINGERTIPS = (4, 8, 12, 16, 20)
 IRIS_MM = 11.7
 
-DEFAULT_ADV = {"dip_start_o": 0.75, "dip_end_o": 0.85, "complete_o": 0.20,
+DEFAULT_ADV = {"dip_start_o": 0.75, "dip_end_o": 0.85,
+               "complete_o": 0.35,        # quick natural blinks bottom out at 0.2-0.4 at 30 fps; only slow ones reach 0.2
+               "perclos_o": 0.20,         # PERCLOS "closed" = lids >= 80% shut; sustained closure does reach it
                "incomplete_max_o": 0.60, "long_blink_s": 0.5, "real_break_s": 20,
                "talk_jaw_std": 0.035,     # jaw-open std over 2 s above this = speaking (talking raises blink rate ~50%)
                "trend_window_min": 12}    # blink-rate decline window
@@ -235,7 +237,7 @@ class Engine:
         if present:
             e = (ear(face, R_EAR, w, h) + ear(face, L_EAR, w, h)) / 2
             o = openness(e, self.cal["ear_open"])
-            closed = o <= self.adv["complete_o"]
+            closed = o <= self.adv["perclos_o"]
             gx, gy = gaze(face)
             yaw = pitch = roll = 0.0
             if f.get("transform"):
