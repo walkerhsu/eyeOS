@@ -134,21 +134,34 @@ func scoreLabel(_ s: Double?) -> String {
     return s >= 80 ? "Eyes relaxed" : s >= 60 ? "Mild strain" : s >= 40 ? "Eyes working hard" : "Time to rest"
 }
 
-/// The biggest single reason the score is down, in plain words.
-func topIssue(_ m: J) -> String {
-    if !m.bool("face_present") { return "Sit in front of the camera to start measuring." }
-    if !m.bool("calibrated") { return "Calibrate once so eyeOS knows your normal." }
-    if (m.num("perclos") ?? 0) > 0.15 { return "Your eyes are closing a lot. Signs of tiredness." }
-    if (m.num("blink_rate") ?? 99) < 8 { return "You're blinking much less than usual." }
-    if m.obj("blink_trend")?.bool("declining") == true { return "Your blinking has been sliding. You may be getting tired." }
-    if (m.num("blink_rate") ?? 0) > 30 { return "You're blinking a lot. Your eyes may already feel dry or irritated." }
-    if !m.arr0("posture_issues").isEmpty && (m.num("posture_off_s") ?? 0) > 60 { return "Your posture is drifting, a common sign of tiredness." }
-    if (m.num("since_real_break_s") ?? 0) > 1800 { return "No real break for \(duration(m.num("since_real_break_s")))." }
-    if (m.num("incomplete_pct") ?? 0) > 0.4 { return "Many blinks aren't closing fully." }
-    if (m.num("current_stare_s") ?? 0) > 15 { return "Long stare. Your eyes haven't blinked in a while." }
-    if m.bool("squinting") { return "You're squinting at the screen." }
-    if let d = m.num("distance_cm"), d < 40 { return "You're sitting close to the screen." }
-    return "Everything looks comfortable."
+/// The biggest single reason the score is down: a sentence for cards, a 1–3 word label for the HUD.
+struct Issue {
+    let text: String
+    let short: String
+}
+
+func topIssue(_ m: J) -> Issue {
+    if !m.bool("face_present") { return Issue(text: "Sit in front of the camera to start measuring.", short: "Away") }
+    if !m.bool("calibrated") { return Issue(text: "Calibrate once so eyeOS knows your normal.", short: "Calibrate") }
+    if (m.num("perclos") ?? 0) > 0.15 { return Issue(text: "Your eyes are closing a lot. Signs of tiredness.", short: "Eyes tired") }
+    if (m.num("blink_rate") ?? 99) < 8 { return Issue(text: "You're blinking much less than usual.", short: "Blink more") }
+    if m.obj("blink_trend")?.bool("declining") == true {
+        return Issue(text: "Your blinking has been sliding. You may be getting tired.", short: "Blinks sliding")
+    }
+    if (m.num("blink_rate") ?? 0) > 30 {
+        return Issue(text: "You're blinking a lot. Your eyes may already feel dry or irritated.", short: "Eyes irritated")
+    }
+    if !m.arr0("posture_issues").isEmpty && (m.num("posture_off_s") ?? 0) > 60 {
+        return Issue(text: "Your posture is drifting, a common sign of tiredness.", short: "Sit back")
+    }
+    if (m.num("since_real_break_s") ?? 0) > 1800 {
+        return Issue(text: "No real break for \(duration(m.num("since_real_break_s"))).", short: "Break due")
+    }
+    if (m.num("incomplete_pct") ?? 0) > 0.4 { return Issue(text: "Many blinks aren't closing fully.", short: "Full blinks") }
+    if (m.num("current_stare_s") ?? 0) > 15 { return Issue(text: "Long stare. Your eyes haven't blinked in a while.", short: "Blink") }
+    if m.bool("squinting") { return Issue(text: "You're squinting at the screen.", short: "Squinting") }
+    if let d = m.num("distance_cm"), d < 40 { return Issue(text: "You're sitting close to the screen.", short: "Too close") }
+    return Issue(text: "Everything looks comfortable.", short: "All good")
 }
 
 struct ScoreRing: View {
@@ -185,7 +198,7 @@ struct ScoreSummary: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Eye score").font(.caption).foregroundStyle(.secondary)
                 Text(scoreLabel(score)).font(.title3.bold())
-                Text(topIssue(store.metrics)).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(topIssue(store.metrics).text).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }
@@ -203,7 +216,7 @@ struct HeroCard: View {
             ScoreRing(score: score, size: 120).explain(Explain.eyeScore)
             VStack(alignment: .leading, spacing: 8) {
                 Text(scoreLabel(score)).font(.system(size: 24, weight: .bold))
-                Text(topIssue(store.metrics)).font(.title3).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(topIssue(store.metrics).text).font(.title3).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if store.inZen {
                     Label("In Zen for \(duration(store.zen.num("duration_s"))). eyeOS is staying silent.", systemImage: "moon.stars.fill")
                         .foregroundStyle(.indigo)
