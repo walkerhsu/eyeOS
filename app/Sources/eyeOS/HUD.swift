@@ -11,7 +11,7 @@ final class HUD {
     private var panel: OverlayPanel?
     private var sub: AnyCancellable?
     private var lastFace = Date()
-    private var lastTalk = Date.distantPast
+    private var lastCall = Date.distantPast
     private var dragStart: (mouse: NSPoint, origin: NSPoint)?
 
     init(store: Store) { self.store = store }
@@ -25,11 +25,11 @@ final class HUD {
     private var shouldShow: Bool {
         let m = store.metrics, v = store.status.obj("local_vision") ?? [:]
         if m.bool("face_present") { lastFace = Date() }
-        if m.bool("talking") || m.str("app_category") == "call" { lastTalk = Date() }
+        if m.str("app_category") == "call" { lastCall = Date() }  // not plain talking: it misfires and the room doesn't mind
         guard store.setting("ui.show_hud"), store.connected, store.fatal == nil, !store.inZen,
               !store.setting("tracking.paused") else { return false }
         if v.bool("ok"), ["meeting", "entertainment"].contains(v.str("situation") ?? "") { return false }
-        if Date().timeIntervalSince(lastTalk) < 10 || Date().timeIntervalSince(lastFace) > 60 { return false }
+        if Date().timeIntervalSince(lastCall) < 10 || Date().timeIntervalSince(lastFace) > 60 { return false }
         if NSApp.isActive, NSApp.keyWindow?.title == "eyeOS" { return false }  // the dashboard already shows all of it
         return true
     }
@@ -56,6 +56,7 @@ final class HUD {
         p.isOpaque = false
         p.backgroundColor = .clear
         p.hasShadow = false
+        p.hidesOnDeactivate = false  // NSPanel hides with its app by default; the HUD lives over other apps
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         p.isReleasedWhenClosed = false
         p.contentView = host

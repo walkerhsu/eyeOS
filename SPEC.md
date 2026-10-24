@@ -838,7 +838,7 @@ A small always-on-top pill (`ui.show_hud`, on by default) for peripheral awarene
 - **Calm** (all good): colored dot + time since the last real break, at 35% opacity.
 - **Drifting** (dot amber, or a break is due): dot + the short top issue ("Blink more", "Sit back", "Too close", "Break due"), at 80%; at red, 100% with one soft pulse when it turns red. Never a repeating animation.
 - **Hover:** full opacity, the full top-issue sentence, and **Break now** / **Hide**. Click opens the dashboard.
-- **Hidden** in Zen, while paused, during meetings or entertainment (conductor), on calls or while talking, after 60 s with no face, and while the eyeOS window is in front.
+- **Hidden** in Zen, while paused, during meetings or entertainment (conductor), on calls, after 60 s with no face, and while the eyeOS window is in front.
 
 ### 11.5 Overlays (UI tools)
 All overlays are borderless `NSPanel`s at `.screenSaver` or `.floating` level, shown on all spaces. They don't steal focus except `ask_user`, `approval` and `exercise`.
