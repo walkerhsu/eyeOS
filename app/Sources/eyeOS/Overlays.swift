@@ -23,7 +23,15 @@ final class Overlays {
     }
 
     func dismiss(_ rid: String) {
-        panels.removeValue(forKey: rid)?.orderOut(nil)
+        guard let p = panels.removeValue(forKey: rid) else { return }
+        guard let i = banners.firstIndex(of: rid) else { return p.orderOut(nil) }
+        banners.remove(at: i)
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.25
+            p.animator().alphaValue = 0
+            p.animator().setFrame(p.frame.offsetBy(dx: p.frame.width + 20, dy: 0), display: true)
+        }, completionHandler: { p.orderOut(nil) })
+        layoutBanners()
     }
 
     func show(_ m: J) {
@@ -32,8 +40,8 @@ final class Overlays {
         let screen = NSScreen.main?.frame ?? .init(x: 0, y: 0, width: 1440, height: 900)
         switch m.str("kind") ?? "" {
         case "notice":
-            present(rid, AnyView(Toast(text: p.str("text") ?? "")), size: .init(width: 280, height: 56), at: .topRight)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in self?.dismiss(rid) }
+            present(rid, AnyView(Toast(text: p.str("text") ?? "")), at: .banner)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in self?.dismiss(rid) }
         case "blink_pulse":
             let count = p.int("count") ?? 2, intensity = p.num("intensity") ?? 0.5
             present(rid, AnyView(EdgePulse(count: count, intensity: intensity)), frame: screen, level: .screenSaver, clickThrough: true)
@@ -43,7 +51,7 @@ final class Overlays {
             present(rid, AnyView(LookAwayCard(message: p.str("message") ?? "Look at something far away.",
                                               seconds: p.int("duration_s") ?? 20) { [weak self] by in
                 self?.respond(rid, ["dismissed_by": by])
-            }), size: .init(width: 340, height: 150), at: .bottomRight)
+            }), at: .banner)
         case "exercise":
             present(rid, AnyView(ExerciseView(type: p.str("type") ?? "palming", steps: p.arr("steps")) { [weak self] done, elapsed in
                 self?.respond(rid, ["completed": done, "elapsed_s": elapsed])
@@ -54,13 +62,13 @@ final class Overlays {
                 var r: J = ["choice": choice as Any? ?? NSNull()]
                 if let text, !text.isEmpty { r["text"] = text }
                 self?.respond(rid, r)
-            }), size: .init(width: 360, height: 200), at: .topRight, keyable: true)
+            }), at: .banner, keyable: true)
         case "approval":
             let tool = p.str("tool") ?? ""
             present(rid, AnyView(ApprovalView(payload: p) { [weak self] choice in
                 if choice == "never" { self?.store.sidecar.send(["type": "set_tool_tier", "tool": tool, "tier": "blocked"]) }
                 self?.respond(rid, ["approved": choice == "allow", "remember": choice != "later"])
-            }), size: .init(width: 380, height: 260), at: .topRight, keyable: true)
+            }), at: .banner, keyable: true)
         case "audio_panel":
             present(rid, AnyView(AudioPill(title: p.str("title") ?? "Reading aloud") { [weak self] action in
                 self?.store.sidecar.command("audio_control", ["action": action])
@@ -69,7 +77,7 @@ final class Overlays {
         case "doctor_card":
             present(rid, AnyView(DoctorCard(message: p.str("message") ?? "") { [weak self] in
                 self?.respond(rid, ["dismissed": true])
-            }), size: .init(width: 460, height: 230), at: .center, keyable: true)
+            }), size: .init(width: 460, height: 200), at: .center, keyable: true)
         default: break
         }
     }
@@ -118,15 +126,36 @@ final class Overlays {
 
     // MARK: - panel plumbing
 
-    enum Anchor { case topRight, bottomRight, bottomCenter, center }
+    enum Anchor { case banner, bottomCenter, center }
+    private var banners: [String] = []  // top-right stack, newest first
+    private let bannerWidth: CGFloat = 360
+
+    /// Stacks banners under the menu bar like macOS notifications, animating into place.
+    private func layoutBanners() {
+        let vis = NSScreen.main?.visibleFrame ?? .init(x: 0, y: 0, width: 1440, height: 900)
+        var top = vis.maxY - 10
+        for rid in banners {
+            guard let p = panels[rid] else { continue }
+            let target = CGRect(x: vis.maxX - bannerWidth - 12, y: top - p.frame.height, width: bannerWidth, height: p.frame.height)
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.3
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                p.animator().setFrame(target, display: true)
+                p.animator().alphaValue = 1
+            }
+            top = target.minY - 8
+        }
+    }
 
     private func present(_ rid: String, _ view: AnyView, size: CGSize = .zero, at anchor: Anchor = .center, frame: CGRect? = nil,
                          level: NSWindow.Level = .floating, keyable: Bool = false, clickThrough: Bool = false) {
         let vis = NSScreen.main?.visibleFrame ?? .init(x: 0, y: 0, width: 1440, height: 900)
+        let host = NSHostingView(rootView: anchor == .banner ? AnyView(view.frame(width: bannerWidth)) : view)
+        // banners take their content's height (capped) so long agent text can't run off screen
+        let fit = CGSize(width: bannerWidth, height: min(host.fittingSize.height, 280))
         let rect = frame ?? {
             switch anchor {
-            case .topRight: return CGRect(x: vis.maxX - size.width - 16, y: vis.maxY - size.height - 16, width: size.width, height: size.height)
-            case .bottomRight: return CGRect(x: vis.maxX - size.width - 16, y: vis.minY + 16, width: size.width, height: size.height)
+            case .banner: return CGRect(x: vis.maxX + 20, y: vis.maxY - 10 - fit.height, width: fit.width, height: fit.height)
             case .bottomCenter: return CGRect(x: vis.midX - size.width / 2, y: vis.minY + 24, width: size.width, height: size.height)
             case .center: return CGRect(x: vis.midX - size.width / 2, y: vis.midY - size.height / 2, width: size.width, height: size.height)
             }
@@ -140,9 +169,16 @@ final class Overlays {
         p.ignoresMouseEvents = clickThrough
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         p.isReleasedWhenClosed = false
-        p.contentView = NSHostingView(rootView: view)
+        p.contentView = host
         panels[rid]?.orderOut(nil)
         panels[rid] = p
+        if anchor == .banner {
+            p.alphaValue = 0
+            banners.removeAll { $0 == rid }
+            banners.insert(rid, at: 0)
+            for old in banners.dropFirst(4) { dismiss(old) }  // keep the stack short
+            layoutBanners()
+        }
         if keyable {
             p.makeKeyAndOrderFront(nil)
         } else {
@@ -153,21 +189,33 @@ final class Overlays {
 
 // MARK: - overlay views
 
+/// Notification-banner look: app icon, bold title, short body, compact controls.
 private struct Card<Content: View>: View {
+    var title = "eyeOS"
+    var icon = "eye"
     @ViewBuilder var content: Content
     var body: some View {
-        content
-            .padding(16)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.white.opacity(0.1)))
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+                .frame(width: 30, height: 30).background(.teal.gradient, in: RoundedRectangle(cornerRadius: 7))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                content.font(.system(size: 13))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.12)))
     }
 }
 
 struct Toast: View {
     let text: String
     var body: some View {
-        Card { Label(text, systemImage: "eye").font(.callout.weight(.medium)) }
+        Card { Text(text).lineLimit(2) }
     }
 }
 
@@ -202,18 +250,17 @@ struct LookAwayCard: View {
     let done: (String) -> Void
     @StateVar private var left: Double = 0
     var body: some View {
-        Card {
-            HStack(alignment: .top, spacing: 14) {
+        Card(title: "Time for a 20-second break", icon: "window.vertical.open") {
+            Text(message).lineLimit(3).foregroundStyle(.secondary)
+            HStack {
                 ZStack {
-                    Circle().stroke(.secondary.opacity(0.3), lineWidth: 5)
-                    Circle().trim(from: 0, to: left / Double(seconds)).stroke(.teal, style: .init(lineWidth: 5, lineCap: .round))
+                    Circle().stroke(.secondary.opacity(0.3), lineWidth: 3)
+                    Circle().trim(from: 0, to: left / Double(seconds)).stroke(.teal, style: .init(lineWidth: 3, lineCap: .round))
                         .rotationEffect(.degrees(-90))
-                    Text("\(Int(left.rounded(.up)))").font(.title3.monospacedDigit())
-                }.frame(width: 54, height: 54)
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(message).font(.callout).fixedSize(horizontal: false, vertical: true)
-                    Button("Done") { done("user") }.keyboardShortcut(.defaultAction)
-                }
+                    Text("\(Int(left.rounded(.up)))").font(.caption2.monospacedDigit())
+                }.frame(width: 26, height: 26)
+                Spacer()
+                Button("Done") { done("user") }.controlSize(.small)
             }
         }
         .task {
@@ -284,14 +331,15 @@ struct AskView: View {
     @StateVar private var text = ""
     var body: some View {
         Card {
-            VStack(alignment: .leading, spacing: 12) {
-                Label("eyeOS", systemImage: "eye").font(.caption).foregroundStyle(.secondary)
-                Text(question).font(.headline).fixedSize(horizontal: false, vertical: true)
-                HStack { ForEach(options, id: \.self) { o in Button(o) { answer(o, text) } } }
-                if freeText {
-                    TextField("Or type…", text: $text).onSubmit { answer(nil, text) }
-                }
-                Button("Not now") { answer(nil, nil) }.buttonStyle(.link).font(.caption)
+            Text(question).lineLimit(3)
+            HStack(spacing: 6) {
+                ForEach(options.prefix(4), id: \.self) { o in Button(o) { answer(o, text) }.lineLimit(1) }
+                Spacer(minLength: 0)
+                Button("Not now") { answer(nil, nil) }.buttonStyle(.borderless).foregroundStyle(.secondary)
+            }
+            .controlSize(.small)
+            if freeText {
+                TextField("Or type…", text: $text).textFieldStyle(.roundedBorder).controlSize(.small).onSubmit { answer(nil, text) }
             }
         }
     }
@@ -301,23 +349,18 @@ struct ApprovalView: View {
     let payload: J
     let choose: (String) -> Void
     var body: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 10) {
-                Label(payload.bool("first_use") ? "eyeOS wants to try something new" : "eyeOS asks",
-                      systemImage: toolIcons[payload.str("tool") ?? ""] ?? "eye").font(.caption).foregroundStyle(.secondary)
-                Text(payload.str("question") ?? "").font(.headline)
-                Text(payload.str("effect") ?? "").font(.callout)
-                if let r = payload.str("reason"), !r.isEmpty {
-                    Text(r).font(.caption).foregroundStyle(.secondary).lineLimit(4)
-                }
-                Spacer(minLength: 0)
-                HStack {
-                    Button("Never") { choose("never") }
-                    Spacer()
-                    Button("Not now") { choose("later") }
-                    Button("Allow") { choose("allow") }.keyboardShortcut(.defaultAction)
-                }
+        Card(title: payload.str("question") ?? "Allow eyeOS?", icon: toolIcons[payload.str("tool") ?? ""] ?? "eye") {
+            Text(payload.str("effect") ?? "").lineLimit(2)
+            if let r = payload.str("reason"), !r.isEmpty {
+                Text(r).font(.caption).foregroundStyle(.secondary).lineLimit(2).help(r)
             }
+            HStack(spacing: 6) {
+                Button("Never") { choose("never") }
+                Spacer(minLength: 0)
+                Button("Not now") { choose("later") }
+                Button("Allow") { choose("allow") }.keyboardShortcut(.defaultAction)
+            }
+            .controlSize(.small)
         }
     }
 }
@@ -346,12 +389,9 @@ struct DoctorCard: View {
     let message: String
     let dismiss: () -> Void
     var body: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 14) {
-                Label("A gentle suggestion", systemImage: "heart.text.square").font(.headline).foregroundStyle(.teal)
-                Text(message).font(.body).fixedSize(horizontal: false, vertical: true)
-                HStack { Spacer(); Button("Dismiss", action: dismiss).keyboardShortcut(.defaultAction) }
-            }
+        Card(title: "A gentle suggestion", icon: "heart.text.square") {
+            Text(message).fixedSize(horizontal: false, vertical: true)
+            HStack { Spacer(); Button("Dismiss", action: dismiss).keyboardShortcut(.defaultAction) }
         }
     }
 }

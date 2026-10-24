@@ -13,9 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 enum Page: String, CaseIterable, Identifiable {
-    case live = "Live", log = "Log", settings = "Settings"
+    case live = "Live", log = "Log", agent = "Agent", settings = "Settings"
     var id: String { rawValue }
-    var icon: String { ["Live": "eye", "Log": "list.bullet.rectangle", "Settings": "gearshape"][rawValue]! }
+    var icon: String { ["Live": "eye", "Log": "list.bullet.rectangle", "Agent": "brain", "Settings": "gearshape"][rawValue]! }
 }
 
 @main
@@ -69,6 +69,7 @@ struct RootView: View {
                 switch page ?? .live {
                 case .live: LiveView()
                 case .log: LogView()
+                case .agent: AgentBoard()
                 case .settings: SettingsView()
                 }
             }
