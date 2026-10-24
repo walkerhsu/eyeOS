@@ -535,6 +535,9 @@ class App:
         elif t == "history_request":
             await self.history_reply(m)
         elif t == "delete_preference":
+            row = self.db.q("SELECT key FROM preferences WHERE id=?", (int(m.get("id")),))
+            if row and row[0]["key"]:  # a learned rule the user removed: don't learn it again
+                await self.set_setting("memory.suppressed", self.settings["memory.suppressed"] + [row[0]["key"]])
             self.db.x("DELETE FROM preferences WHERE id=?", (int(m.get("id")),))
             await self.send_preferences()
         elif t == "command":
@@ -698,7 +701,7 @@ class App:
         self.done = self.loop.create_future()
         self.thread = threading.Thread(target=self.vision_thread, daemon=True)
         self.thread.start()
-        tasks = [self.tick_5hz(), self.tick_1hz(), self.screen.loop()]
+        tasks = [self.tick_5hz(), self.tick_1hz(), self.screen.loop(), self.agent.relearn()]
         if self.print_mode:
             tasks.append(self.print_loop())
         if self.port and not sys.stdin.isatty():

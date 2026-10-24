@@ -85,6 +85,7 @@ SETTINGS = {
     "audio.voice_id": ("", _str),  # empty = first voice from the Cartesia voices API
     "audio.speed": (1.0, _num(0.6, 1.5)),
     "demo.enabled": (False, _bool),
+    "memory.suppressed": ([], lambda v: isinstance(v, list) and all(_str(x) for x in v)),  # learned keys the user deleted
 }
 for _id, (thr, sus, _, _) in TRIGGERS.items():
     SETTINGS[f"triggers.{_id}.enabled"] = (True, _bool)
@@ -106,6 +107,10 @@ class DB:
         self.c.row_factory = sqlite3.Row
         self.c.execute("PRAGMA journal_mode=WAL")
         self.c.executescript(SCHEMA)
+        try:  # learned memory rules are keyed so they can be updated in place (learning.py)
+            self.c.execute("ALTER TABLE preferences ADD COLUMN key TEXT")
+        except sqlite3.OperationalError:
+            pass
         self.c.execute("DELETE FROM metrics_1hz WHERE ts < ?", (time.time() - 30 * 86400,))
         self.close_interrupted()
 
@@ -153,7 +158,7 @@ class DB:
         self.x("INSERT INTO baselines (ts, data, reason) VALUES (?, ?, ?)", (time.time(), json.dumps(data), reason))
 
     def preferences(self):
-        return self.q("SELECT id, ts, rule, app, source FROM preferences ORDER BY id")
+        return self.q("SELECT id, ts, rule, app, source, key FROM preferences ORDER BY id")
 
     def add_preference(self, rule, app=None, source="agent"):
         return self.x("INSERT INTO preferences (ts, rule, app, source) VALUES (?, ?, ?, ?)", (time.time(), rule, app, source))

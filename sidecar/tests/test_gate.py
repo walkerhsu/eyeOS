@@ -22,6 +22,9 @@ class FakeApp:
     async def send_approvals(self):
         pass
 
+    async def send_preferences(self):
+        pass
+
     async def notice(self, text):
         pass
 
@@ -65,7 +68,7 @@ def test_decline_is_remembered_and_saves_preference(tmp_path):
     out, ex = call(app, "set_dark_mode", {"enabled": True})
     assert ex == [] and "declined" in out
     assert app.db.approvals()["set_dark_mode"] == "declined"
-    assert any("declined set_dark_mode" in p["rule"] for p in app.db.preferences())
+    assert any(p["key"] == "decline:set_dark_mode" and p["source"] == "learned" for p in app.db.preferences())
 
 
 def test_timeout_decline_not_remembered(tmp_path):

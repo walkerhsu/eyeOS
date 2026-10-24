@@ -13,6 +13,7 @@ from pathlib import Path
 
 import claude_agent_sdk as sdk
 
+from . import learning
 from . import tools as T
 from .codex import Codex
 from .metrics import verdict
@@ -46,6 +47,8 @@ Rules:
   baseline) suggests irritation or dryness already present. blink_rate is null while the user talks or is on a call.
 - blink_decline (blink rate sliding over ~10 min) and posture_drift (slumping, head dropping, leaning in vs the start of
   the session) are fatigue signs: say gently that they may be getting tired and suggest a real break.
+- preferences include rules learned from this user's history (what helped, what they declined); follow them.
+  When the user states a lasting preference (an ask_user answer or note), save it with save_user_preference.
 - screen_activity is an on-device description of the screen (you never see pixels). Use it to pick actions: e.g. small
   text + leaning in or squinting -> set_text_zoom; long reading -> offer summarize_aloud or switch_to_audio; a much
   brighter screen than the room -> set_display_brightness down in small steps."""
@@ -109,6 +112,18 @@ class Agent:
 
     def provider(self):
         return self.app.settings.get("agent.provider", "claude")
+
+    async def relearn(self):
+        """Refresh learned memory rules after anything that teaches us about this user."""
+        try:
+            new = learning.apply(self.db, learning.derive(self.db, suppressed=self.app.settings.get("memory.suppressed", [])))
+        except Exception:  # noqa: BLE001 - learning must never break a run
+            traceback.print_exc()
+            return
+        await self.app.send_preferences()
+        if new and not self.app.zen.active:
+            rule = next(p["rule"] for p in self.db.preferences() if p.get("key") == new[0])
+            await self.app.notice("eyeOS learned: " + rule)
 
     def available(self):
         return bool(CLIS.get(self.provider()))
@@ -353,12 +368,11 @@ class Agent:
             approved = bool(res and res.get("approved"))
             if needs_first_use and res is not None:
                 db.set_approval(name, "approved" if approved else "declined")
-                if not approved:
-                    db.add_preference(f"User declined {name} on {dt.date.today()} (context: {reason})", source="auto_decline")
                 await app.send_approvals()
             db.x("UPDATE tool_calls SET approval=? WHERE id=?", ("approved" if approved else "declined" if res else "timeout", row))
             if not approved:
                 await status("declined", "declined by user" if res else "no answer (60 s)")
+                await self.relearn()
                 return "declined by user" if res else "declined: no answer within 60 s"
             await status("approved")
 
@@ -368,6 +382,8 @@ class Agent:
         except Exception as e:  # noqa: BLE001
             ok, result = False, f"{type(e).__name__}: {e}"
         await status("done" if ok else "failed", result)
+        if name == "ask_user":
+            await self.relearn()
         if ok and meta["kind"] == "action":
             app.last_action = {"name": name, "ts": time.time()}
             if meta["target"] or name == "start_guided_eye_exercise":
@@ -452,7 +468,6 @@ class Agent:
             asyncio.create_task(app.ui_request("exercise", {"type": a["type"], "duration_s": a["duration_s"], "steps": steps},
                                                a["duration_s"] + 30))
             asyncio.create_task(self._narrate(steps))
-            self.pending_suggestions.append({"call_id": call_id, "tool": name, "ts": time.time()})
             return True, f"{a['type']} exercise started ({a['duration_s']} s)"
         if name == "play_ambient_cue":
             res = await app.tool_exec(name, a, 10)
@@ -585,7 +600,7 @@ class Agent:
     async def evaluate_outcome(self, call_id, tool, metric, t_call):
         await asyncio.sleep(195)
         app = self.app
-        if tool in ("suggest_look_out_window", "start_guided_eye_exercise"):
+        if tool == "suggest_look_out_window":
             metric = "since_real_break_s"
             brk = app.engine.last_break_end
             # a real break that started within 2 min ends (and is recorded) by the time we evaluate
@@ -613,6 +628,7 @@ class Agent:
         await app.send({"type": "outcome", "action_id": oid, "call_id": call_id, "tool": tool, "metric": metric,
                         "before": None if before is None else round(before, 3),
                         "after": None if after is None else round(after, 3), "verdict": v})
+        await self.relearn()
 
     # ---------- daily summary (§9.9) ----------
 
