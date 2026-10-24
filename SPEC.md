@@ -341,9 +341,23 @@ yawn      = yawn_open sustained ≥ 1.5 s, then closes
   "presence_s": 1430, "session_s": 2810, "since_real_break_s": 1310,
   "screen_time_today_s": 14200,
   "fps": 29.6,
-  "calibrated": true
+  "calibrated": true,
+  "eye_score": 84,
+  "zen": false
 }
 ```
+
+### 4.14 Eye score
+A 0–100 summary of the live strain signals for the Live page (100 = relaxed). `null` without a face or before calibration. It starts at 100 and subtracts:
+- blink rate below the user's baseline: up to 30 (linear, 0 at baseline, 30 at 0/min)
+- `incomplete_pct` 0.2 → 0.6: up to 15
+- `current_stare_s` 10 → 30 s: up to 10
+- `perclos` 0.08 → 0.20: up to 15
+- `distance_cm` 50 → 35 cm: up to 10
+- `since_real_break_s` 20 → 60 min: up to 10
+- squinting: 10
+
+It is display-only; the agent and triggers use the raw metrics.
 
 ---
 
@@ -365,15 +379,16 @@ The trigger engine runs on each 5 Hz snapshot. Triggers are deterministic, so th
 | `dark_room_bright_screen` | mismatch (§4.11) 60 s | 15 s |
 | `no_break` | `since_real_break_s > 1200` (20 min) | 120 s |
 | `break_taken` | a real break just ended. Used to evaluate a pending `suggest_look_out_window` or exercise and to clear `no_break`. | same |
-| `heartbeat` | every 300 s while face present | 60 s |
+| `heartbeat` | every 900 s while face present | 180 s |
 
 Rate limiting:
-- Each trigger id has a **cooldown** (default 180 s, demo 20 s) after it fires.
-- **Global minimum gap** between LLM calls: 45 s (demo 15 s).
+- Each trigger id has a **cooldown** (default 600 s, demo 45 s) after it fires.
+- **Global minimum gap** between LLM calls: 120 s (demo 30 s).
 - **One agent run at a time.** Triggers that fire during a run, or inside the global gap, are queued and **merged** into the next run's trigger list.
 - `eye_rub` bypasses the global gap (but not its cooldown), because instant reaction is the demo moment.
-- `heartbeat` is skipped if any other trigger ran in the last 300 s.
+- `heartbeat` is skipped if any other trigger ran within the last heartbeat interval.
 - No triggers fire while tracking is paused, uncalibrated, or face absent > 2 min.
+- **Zen mode (§9.11):** triggers are still evaluated and logged, but the queue is cleared and no agent run starts.
 
 Each fired trigger is written to `events` (§10) and streamed to the UI.
 
@@ -395,7 +410,7 @@ These are sent at 15 fps **only when** setting `ui.show_camera_image == true`.
 | type | payload | rate |
 |---|---|---|
 | `hello` | `{version, calibrated, paused, settings}` | on connect |
-| `status` | `{camera_ok, face_present, paused, calibrated, fps, agent_busy, demo_mode}` | on change + 1 Hz |
+| `status` | `{camera_ok, face_present, paused, calibrated, fps, agent_busy, demo_mode, has_claude, zen: {active, since, source, held_back, duration_s}, today: {screen_time_s, breaks, rubs, yawns, nudges, zen_s, longest_zen_s, avg_blink_rate, avg_eye_score}}` | on change + 1 Hz (`today` recomputed every 30 s) |
 | `landmarks` | `{ts, face: [[x,y],…478] \| null, hands: [[[x,y],…21],…], iris: {r:[x,y,r], l:[x,y,r]}}` | 15 fps |
 | `metrics` | snapshot (§4.13) | 5 Hz |
 | `event` | `{id, ts, kind, trigger_id, value, details}` | as they happen |
@@ -437,6 +452,7 @@ These are sent at 15 fps **only when** setting `ui.show_camera_image == true`.
 | `audio_panel` | `{title, source}` | sent once; controls go via `command:audio_control` |
 | `doctor_card` | `{message, evidence}` | `{dismissed: true}` |
 | `notice` | `{text}` (generic toast, e.g. "Dark mode on") | none |
+| `zen_recap` | `{duration_s, reason, source, held_back, blink_rate, baseline_blink_rate, longest_stare_s, suggest_rest}` (§9.11) | `{action: "rested"\|"later"\|"ok"}` |
 
 ### 6.3 Swift → Python
 
@@ -444,12 +460,12 @@ These are sent at 15 fps **only when** setting `ui.show_camera_image == true`.
 |---|---|
 | `ui_response` | `{request_id, result}` |
 | `tool_result` | `{request_id, ok, result \| error}` |
-| `command` | `{name, args?}`, where `name` is one of `pause`, `resume`, `shutdown`, `calibrate {step}`, `reset_approvals`, `seed_demo`, `wipe_demo`, `generate_summary {date?}`, `audio_control {action: pause\|resume\|stop}`, `run_agent_now` (debug) |
+| `command` | `{name, args?}`, where `name` is one of `pause`, `resume`, `shutdown`, `calibrate {step}`, `reset_approvals`, `seed_demo`, `wipe_demo`, `generate_summary {date?}`, `audio_control {action: pause\|resume\|stop}`, `run_agent_now` (debug), `zen {on: bool}` (start / end Zen manually) |
 | `set_setting` | `{key, value}` |
 | `get_settings` | `{}` |
 | `get_approvals` | `{}` |
 | `set_tool_tier` | `{tool, tier}` |
-| `history_request` | `{request_id, kind: "metrics"\|"events"\|"runs", from, to, limit}` |
+| `history_request` | `{request_id, kind: "metrics"\|"events"\|"runs", from, to, limit}`. Metrics rows carry `ts` plus `blink_rate, perclos, distance_cm, squint_delta, incomplete_pct, eye_score, current_stare_s, longest_stare_s, gaze_on_screen, blink_duration_ms, since_real_break_s, zen`. |
 | `delete_preference` | `{id}` |
 
 Python validates every inbound message: unknown types get an `error` reply, and settings keys and values are checked against §8 types and ranges.
@@ -458,22 +474,16 @@ Python validates every inbound message: unknown types get an `error` reply, and 
 
 ## 7. Onboarding and calibration
 
-Onboarding runs on first launch, and each step can be rerun from Settings.
+Setup is kept to what tracking needs. Keys, permissions other than the camera, and Focus Shortcuts are optional and live in Settings (§8).
 
-1. **Welcome and API keys:** fields for the Anthropic and Cartesia keys, saved to the Keychain. Then the sidecar starts.
-2. **Permissions checklist:**
-   - Camera (requested natively).
-   - Screen Recording, checked with `CGPreflightScreenCaptureAccess()`.
-   - Accessibility, checked with `AXIsProcessTrusted()`.
-   - Automation, checked with a test `osascript` against System Events.
-   - Each item shows ✓/✗ and an "Open Settings" button that deep-links to the right pane (`x-apple.systempreferences:com.apple.preference.security?Privacy_Camera`, `…Privacy_ScreenCapture`, `…Privacy_Accessibility`, `…Privacy_Automation`).
-   - Can't be skipped without confirming that the related tools will be unavailable.
-3. **Focus Shortcuts check:** runs `shortcuts list`. If "eyeOS Focus On" or "eyeOS Focus Off" is missing, show instructions for creating them (Shortcuts → New → "Set Focus" → Do Not Disturb → On/Off) with a "Check again" button. Skippable, which disables `set_focus_mode`.
-4. **Calibration step 1 (distance):** "Sit about an arm's length (~60 cm) from the screen and look at the dot." Collect 3 s of iris widths and take the median as `w_px_cal`. Optional: the user enters their actual distance in cm.
-5. **Calibration step 2 (gaze):** a dot shown at screen center, then the four screen corners, 2 s each. Record `gx`, `gy`, yaw and pitch. The center pose becomes the head-pose zero, and the corner extremes give `cal_gx_min/max` and `cal_gy_min/max`.
-6. **Calibration step 3 (baseline):** "Work normally for 60 seconds." Record the median open-state EAR (`EAR_open_baseline`), `squint_score_baseline`, blink rate and blink duration. Results are saved to `baselines`, and onboarding is done.
+1. **Welcome:** one line ("Looks after your eyes while you work.") and three icon rows: video stays on your Mac, 15-second calibration, silent while you're in deep focus. **Get started** requests camera access natively (`AVCaptureDevice.requestAccess`) and restarts the sidecar on first grant. If access is denied, show a deep link to `…Privacy_Camera`. **Skip** marks setup done without calibrating; the Live header then shows "Not calibrated · set up".
+2. **Calibration step 1 (distance, 3 s):** illustration (person ↔ ≈ 60 cm ↔ laptop), "Sit back at arm's length". Collect 3 s of iris widths and take the median as `w_px_cal`; `calibration.distance_cm` is the assumed distance.
+3. **Calibration step 2 (gaze, 10 s):** a full-screen dot at the center, then the four corners, 2 s each. Record `gx`, `gy`, yaw and pitch. The center pose becomes the head-pose zero, and the corner extremes give `cal_gx_min/max` and `cal_gy_min/max`.
+4. **Done:** "You're set". **Start using eyeOS** closes the sheet and starts **calibration step 3 (baseline, 60 s) in the background**: the median open-state EAR (`EAR_open_baseline`), `squint_score_baseline`, blink rate and blink duration. The Live header shows "Learning your normal blink rate · Ns" until it finishes, and `calibrated` becomes true.
 
-If a step fails (no face for > 50% of the step), the `calibration` message reports `failed` with a reason and the step is retried.
+Each calibration step shows a live "Face found" check; **Start** is disabled until a face is visible. The step shows a progress ring while running and advances automatically on `done`. If a step fails (no face for > 50% of the step), the `calibration` message reports `failed` with a reason and the step offers **Try again**. A failed background baseline shows "Baseline failed · retry" in the Live header.
+
+**Recalibrate** (Settings → Camera, or the Live header pill) opens the same sheet at step 1.
 
 ---
 
@@ -483,19 +493,21 @@ Settings live in the SQLite `settings` table (key → JSON value), owned by Pyth
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `ui.show_camera_image` | bool | true | off = landmark mesh on dark canvas; no JPEG frames sent |
+| `ui.show_camera_image` | bool | true | on = Live page shows the camera; off = score-first layout, no JPEG frames sent (§11.1) |
 | `tracking.paused` | bool | false | pause also releases the camera |
 | `agent.enabled` | bool | true | off = metrics/triggers only, no LLM calls |
 | `agent.model` | str | `claude-sonnet-5-5` | fallback `claude-haiku-5-5` |
-| `agent.heartbeat_s` | int 60–1800 | 300 | |
-| `agent.global_gap_s` | int 10–600 | 45 | |
-| `agent.trigger_cooldown_s` | int 10–1800 | 180 | |
+| `agent.heartbeat_s` | int 60–3600 | 900 | |
+| `agent.global_gap_s` | int 10–1800 | 120 | |
+| `agent.trigger_cooldown_s` | int 10–3600 | 600 | |
 | `agent.send_images` | bool | true | webcam frame + screenshot on event runs |
 | `agent.max_tool_iterations` | int 1–10 | 6 | |
 | `triggers.<id>.enabled` | bool | true | per trigger in §5 |
 | `triggers.<id>.threshold` | number | §5 | |
 | `triggers.<id>.sustain_s` | number | §5 | |
 | `tools.<name>.tier` | `auto`\|`ask`\|`blocked` | §9 | |
+| `zen.enabled` | bool | true | auto-detect deep focus (§9.11); manual Zen always works |
+| `zen.enter_min` | number 1–60 | 10 | minutes of sustained focus before auto Zen |
 | `quiet_apps` | [bundle id \| title substring] | see §9.4 | UI tools suppressed |
 | `calibration.distance_cm` | number | 60 | |
 | `advanced.dip_start_o` / `dip_end_o` / `complete_o` / `incomplete_max_o` / `long_blink_s` | numbers | 0.75 / 0.85 / 0.20 / 0.60 / 0.5 | |
@@ -505,14 +517,16 @@ Settings live in the SQLite `settings` table (key → JSON value), owned by Pyth
 | `demo.enabled` | bool | false | §12 |
 | `sidecar.repo_path` | path | dev path | Swift-side (UserDefaults) |
 
-Settings page sections:
-1. **General:** camera image toggle, pause, agent on/off, heartbeat.
-2. **Triggers:** per-trigger enable, threshold and sustain, with a "reset to defaults" button.
-3. **Tools:** a table of every tool showing tier picker, approval state (never asked / approved / declined), executor and description, plus a **Reset approvals** button.
-4. **Quiet apps:** an editable list.
-5. **Memory:** the preferences the agent saved, editable and deletable, plus the current baseline values and a recalibrate button per step.
-6. **Keys:** Anthropic and Cartesia (Keychain), sidecar repo path.
-7. **Demo:** demo mode toggle, Seed history, Wipe seeded data.
+Settings page (one scrolling column of cards):
+1. **Camera & calibration:** status, Recalibrate, show-camera toggle, pause tracking.
+2. **Zen mode:** auto-detect toggle, minutes before Zen, Start / End Zen now.
+3. **Agent:** on/off, model, check-in interval, minimum gap between runs, per-trigger cooldown (all in minutes), send images.
+4. **Permissions:** Camera (required), Screen Recording, Accessibility, Automation, each with ✓ or a Grant button that requests and deep-links to the pane.
+5. **Keys & voice:** Cartesia and Anthropic (Keychain), sidecar repo path, Save and restart; Focus Shortcuts check (`shortcuts list` for "eyeOS Focus On/Off"; missing disables `set_focus_mode`).
+6. **Quiet apps:** an editable list.
+7. **Memory:** the preferences the agent saved (deletable) and the current baseline values.
+8. **Advanced** (collapsed): per-trigger enable / threshold / sustain with reset; the tools table (tier picker, approval state, description) with Reset approvals.
+9. **Demo:** demo mode toggle, Seed history, Wipe seeded data, Run agent now, Run setup again.
 
 ---
 
@@ -531,6 +545,7 @@ Every run is stateless: there's no conversation carried between runs. Continuity
 
 ### 9.2 Gate (order matters)
 1. **Unknown tool or invalid args** → `failed`, with the error returned to the model.
+   Then **Zen** (§9.11): any action tool or UI tool → `blocked_suppressed` ("the user is in deep focus"). Read and memory tools still run.
 2. **Tier `blocked`** → `blocked_tier`.
 3. **Suppression:** if the active app matches `quiet_apps` and the tool is UI-interrupting (`ui: true` in §9.5) → `blocked_suppressed`.
 4. **Hard rules:**
@@ -702,6 +717,25 @@ Rules:
 - Messages you write for the user are short, warm and natural, never nagging.
 ```
 
+### 9.11 Zen mode (deep focus)
+When the user is deep in focused work, eyeOS keeps measuring but becomes invisible: no agent runs, no overlays, sounds, approvals or system changes, and the menu bar shows a plain eye icon (no blink count, no colored dot).
+
+**Auto entry** (`zen.enabled`, window = `zen.enter_min`, default 10 min), checked at 1 Hz once calibrated and not paused. All must hold over the window:
+- face present ≥ 85% of seconds, and gaze on screen ≥ 75% of those
+- keyboard / mouse / scroll input within the last 60 s for ≥ 70% of seconds (`CGEventSourceSecondsSinceLastEventType`, any input)
+- front app in a work category (`coding`, `design`, `writing`, `reading`) ≥ 80% of seconds, and never `call`
+- no real break inside the window (`since_real_break_s` ≥ window)
+
+**Auto exit:** a real break (looked away ≥ 20 s), face absent 60 s, no input 180 s, a non-work app in front 60 s, or a call.
+
+**Manual:** `command:zen {on}` from the Live header, the menu bar or Settings. Manual Zen ends only when the user ends it (or a call starts). Ending Zen manually suppresses auto entry until the next real break.
+
+**While active:** triggers are evaluated and logged (`details.zen = true`) and counted as `held_back`; the trigger queue is cleared and no run starts. The gate blocks visible tools (§9.2). On entry, any open `ui_request` is dismissed and resolved as no answer.
+
+**Recap:** when a Zen session of ≥ 5 min (demo: 1 min) ends for any reason except `away`, one `zen_recap` banner shows the duration, the average blink rate vs. baseline and how many nudges were held back. If the session was ≥ 20 min or the blink rate fell below 70% of baseline, it offers **Rest eyes 20 s** (an in-card countdown) or **Later**.
+
+**Logging:** `events` rows with `kind='zen'`: `zen_start` (details: source) and `zen_end` (value = duration s; details: reason, held_back, blink_rate, longest_stare_s). Zen time feeds the Live page's Today stats and timeline shading.
+
 ---
 
 ## 10. Persistence (SQLite)
@@ -712,7 +746,7 @@ File: `~/Library/Application Support/eyeOS/eyeos.db`, in WAL mode, with a single
 CREATE TABLE settings     (key TEXT PRIMARY KEY, value TEXT NOT NULL);           -- JSON value
 CREATE TABLE metrics_1hz  (ts REAL PRIMARY KEY, data TEXT NOT NULL,              -- §4.13 JSON
                            app_category TEXT, seeded INTEGER DEFAULT 0);
-CREATE TABLE events       (id INTEGER PRIMARY KEY, ts REAL, kind TEXT,           -- trigger|blink_anomaly|break|rub|yawn|system
+CREATE TABLE events       (id INTEGER PRIMARY KEY, ts REAL, kind TEXT,           -- trigger|blink_anomaly|break|rub|yawn|zen|system
                            trigger_id TEXT, value REAL, details TEXT, run_id INTEGER, seeded INTEGER DEFAULT 0);
 CREATE TABLE agent_runs   (id INTEGER PRIMARY KEY, ts_start REAL, ts_end REAL, status TEXT,
                            triggers TEXT, context TEXT, images_sent INTEGER,
@@ -737,35 +771,29 @@ CREATE INDEX idx_calls_run ON tool_calls(run_id);
 
 ## 11. UI
 
-General: SwiftUI `NavigationSplitView` with a sidebar of three items (Live, Log, Settings). The window closes to the menu bar and the app keeps running. A dark-friendly palette is used throughout.
+General: SwiftUI `NavigationSplitView` with a sidebar (Live, Log, Agent, Settings). The window closes to the menu bar and the app keeps running. A dark-friendly palette is used throughout.
 
 ### 11.1 Live page
-- **Left, about 60%:** the video view.
-  - **Camera image on:** the JPEG frame with the overlay drawn on top.
-  - **Camera image off:** a dark canvas with the overlay only.
-  - **Overlay:**
-    - a sparse face mesh, drawn as points and contours from the `landmarks` message
-    - eye contours colored by `o` (green open → red closed)
-    - iris circles
-    - a gaze vector
-    - fingertips when hands are visible
-    - a head-pose axis gizmo
-  - **Corner badges:** fps, "face lost", and "uncalibrated".
-  - **Toggle:** "Show camera image" at the top right of the view.
-- **Right, about 40%:** a 2-column grid of 8 metric cards. Each shows the value, the baseline value in small text and a status color (green/amber/red):
+A scrolling dashboard of cards (soft fill, hairline border, rounded 16 pt), with an icon on every tile and section.
 
-| Card | Green / Amber / Red |
-|---|---|
-| Blink rate /min | ≥ 12 / 8–12 / < 8 |
-| Current / longest stare | < 10 s / 10–20 s / > 20 s |
-| Incomplete blinks % | < 25 / 25–40 / > 40 |
-| PERCLOS | < 8% / 8–15% / > 15% |
-| Distance cm | ≥ 50 / 40–50 / < 40 |
-| Squint | not squinting / squinting < 30 s / sustained |
-| Session · since break | < 20 min / 20–40 / > 40 |
-| Agent status | idle / thinking (spinner) / acted (last action name, 10 s) |
+- **Header** (both layouts): the title "Live"; status pills for tracking (Tracking · fps / Looking for you / Camera off / Paused), calibration (Learning your normal blink rate · Ns / Not calibrated · set up / Baseline failed · retry) and agent (watching / thinking / silent in Zen / off / unavailable); the **Zen button** (inactive: "Zen"; active: a gradient capsule "Zen · 23m · 3 held", click to end); and the **Camera toggle**, always in the same place.
+- **Camera on** (`ui.show_camera_image`): camera view on the left with the overlay (sparse mesh, eye contours colored by `o`, iris circles, gaze vector, fingertips, head-pose gizmo, plus "Eye rub" / "Squinting" badges), the Today card under it; on the right the eye-score summary and a 2-column tile grid.
+- **Camera off:** a hero card with a large eye-score ring (§4.14), a plain-words label (Eyes relaxed / Mild strain / Eyes working hard / Time to rest), the single biggest issue ("No real break for 32m") and, in Zen, a Zen line; Today stats on the right. Below it, a 4-column tile grid. No camera frames are streamed.
+- **Tiles** (value + unit, one detail line, status dot; clicking a tile plots it on the timeline):
 
-- **Bottom strip:** a live "dip trace" (`o` over the last 10 s, with blink and incomplete markers). This is the key demo visual for incomplete blinks.
+| Tile | Detail | Green / Amber / Red |
+|---|---|---|
+| Blink rate /min | your normal (baseline) | ≥ 12 / 8–12 / < 8 |
+| Incomplete blinks % | "Blinks that don't fully close" | < 25 / 25–40 / > 40 |
+| Stare s | longest stare | < 10 s / 10–20 s / > 20 s |
+| Drowsiness (PERCLOS) % | "Time eyes are mostly closed" | < 8 / 8–15 / > 15 |
+| Screen distance cm | calibrated distance | ≥ 50 / 40–50 / < 40 |
+| Squint | lid tension or squint duration | relaxed / < 30 s / sustained |
+| Last break | 20-20-20 countdown or "overdue", progress bar | < 20 min / 20–40 / > 40 |
+| Focus / Zen focus | session or Zen length, eyes on screen % (last min) | — |
+
+- **Today:** screen time, real breaks, time in Zen, average blinks/min, nudges (action tools run), eye rubs, from `status.today`.
+- **Timeline:** a metric picker (eye score, blink rate, eye openness (live), incomplete blinks, stare, drowsiness, distance, squint, since last break, eyes on screen) and a range picker (**1m / 10m / 1h / Today**). 1m–1h come from a 1 Hz in-memory buffer (last hour); Today comes from `history_request` (480 rows, refreshed every 60 s). Data is averaged into ≤ 240 buckets; gaps without a face break the line. It draws an area + line in the metric's color, Zen periods shaded indigo, a dashed watch line and the user's baseline where defined, plus a Now / Average / Low / High (/ Baseline) row. "Eye openness (live)" is the 60 s dip trace with full (red), half (orange) and long (purple) blink markers.
 
 ### 11.2 Log page
 - **Header:** the date picker, the "Daily summary" button, and the summary text when present.
@@ -790,15 +818,16 @@ General: SwiftUI `NavigationSplitView` with a sidebar of three items (Live, Log,
 - **Data:** a live stream plus `history_request` for past ranges, 500 rows per page.
 
 ### 11.3 Settings page
-See §8 for the sections.
+See §8 for the cards. It is a plain `ScrollView`, not a grouped `Form`.
 
 ### 11.4 Menu bar extra
-- **Icon:** an eye glyph, plus the live blink rate (e.g. `👁 7`), plus a colored dot (worst card status).
+- **Icon:** an eye glyph, plus the live blink rate (e.g. `👁 7`), plus a colored dot (worst card status). In Zen: the eye glyph only.
 - **Menu:**
   - Open eyeOS
   - Pause tracking / Resume
+  - Start Zen / End Zen (duration)
   - Agent: On/Off
-  - Last action: <name, time>
+  - Last action: <name, time> (hidden in Zen)
   - Quit
 
 ### 11.5 Overlays (UI tools)
@@ -813,13 +842,14 @@ All overlays are borderless `NSPanel`s at `.screenSaver` or `.floating` level, s
 | **Audio panel** | a compact pill with title, pause/resume and stop. |
 | **Doctor card** | centered, calm styling, text per §9.6, Dismiss. |
 | **Notice** | a small toast ("Dark mode turned on"). |
+| **Zen recap** | top-right banner after a Zen session (§9.11): duration, blink rate vs. normal, nudges held back; optional in-card 20 s rest countdown. |
 
 ---
 
 ## 12. Demo mode
 
 Turned on in Settings → Demo.
-- Uses the demo values from §5 for cooldowns and sustain durations, `agent.global_gap_s=15` and `heartbeat=60`.
+- Uses the demo values from §5 for sustain durations, a 45 s trigger cooldown, `agent.global_gap_s=30` and `heartbeat=180`. The Zen recap shows after ≥ 1 min (instead of 5). Lower `zen.enter_min` to demo auto Zen, or start it manually.
 - **Seed history** writes 7 days of synthetic `metrics_1hz` aggregates (at 1/min resolution, to keep it small), events, runs, tool calls and outcomes, and summaries, all with `seeded=1`. Seeded data has a declining blink rate (14 → 7 over the week) and rising incomplete %, so `suggest_seeing_eye_doctor` becomes eligible and the summary has a story.
 - **Wipe seeded data** deletes `WHERE seeded=1`.
 - **Reset approvals** (Settings → Tools) lets the first-use approval flow be shown again.

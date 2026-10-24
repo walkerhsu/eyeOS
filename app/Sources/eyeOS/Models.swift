@@ -36,8 +36,49 @@ func clock(_ ts: Double?) -> String {
 
 enum Level { case good, warn, bad, none
     var color: Color {
-        switch self { case .good: .green; case .warn: .orange; case .bad: .red; case .none: .secondary }
+        switch self { case .good: .mint; case .warn: .orange; case .bad: .pink; case .none: .secondary }
     }
+    var label: String {
+        switch self { case .good: "Good"; case .warn: "Watch"; case .bad: "High"; case .none: "—" }
+    }
+}
+
+/// "1h 12m", "12m", "45s"
+func duration(_ s: Double?) -> String {
+    guard let s else { return "–" }
+    let m = Int(s) / 60
+    if m >= 60 { return "\(m / 60)h \(m % 60)m" }
+    return m > 0 ? "\(m)m" : "\(Int(s))s"
+}
+
+/// A metric the Live page can plot. `scale` converts the raw value to the displayed unit.
+struct MetricDef: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let icon: String
+    let unit: String
+    let color: Color
+    var scale = 1.0
+    var digits = 0
+    var domain: ClosedRange<Double>? = nil
+    var limit: Double? = nil            // dashed "watch" line, in display units
+    var baselineKey: String? = nil
+
+    static let all: [MetricDef] = [
+        .init(id: "eye_score", title: "Eye score", icon: "heart.text.square", unit: "", color: .mint, domain: 0...100, limit: 60),
+        .init(id: "blink_rate", title: "Blink rate", icon: "eye", unit: "/min", color: .teal, digits: 1, limit: 8, baselineKey: "blink_rate"),
+        .init(id: "openness", title: "Eye openness (live)", icon: "waveform.path", unit: "", color: .cyan, digits: 2, domain: 0...1.2),
+        .init(id: "incomplete_pct", title: "Incomplete blinks", icon: "circle.lefthalf.filled", unit: "%", color: .orange, scale: 100,
+              domain: 0...100, limit: 40),
+        .init(id: "current_stare_s", title: "Stare", icon: "timer", unit: "s", color: .yellow, limit: 15),
+        .init(id: "perclos", title: "Drowsiness", icon: "moon.zzz", unit: "%", color: .purple, scale: 100, digits: 1, limit: 15),
+        .init(id: "distance_cm", title: "Screen distance", icon: "ruler", unit: "cm", color: .blue, limit: 40, baselineKey: "distance_cm"),
+        .init(id: "squint_delta", title: "Squint", icon: "sun.max", unit: "", color: .pink, digits: 2),
+        .init(id: "since_real_break_s", title: "Since last break", icon: "cup.and.saucer", unit: "min", color: .green, scale: 1.0 / 60,
+              limit: 20),
+        .init(id: "gaze_on_screen", title: "Eyes on screen", icon: "scope", unit: "%", color: .indigo, scale: 100, domain: 0...100),
+    ]
+    static func get(_ id: String) -> MetricDef { all.first { $0.id == id } ?? all[1] }
 }
 
 /// Status color for a "higher is better" value (≥ good → green, ≥ warn → amber).

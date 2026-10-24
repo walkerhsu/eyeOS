@@ -1,186 +1,233 @@
 import AVFoundation
-import ApplicationServices
 import SwiftUI
 
+/// First-run setup: welcome, then two short calibrations. The 60 s blink baseline (calibration step 3)
+/// runs in the background after the sheet closes; the Live header shows its progress.
+/// Keys, Shortcuts and extra permissions live in Settings and are only needed for optional features.
 struct OnboardingView: View {
     @EnvironmentObject var store: Store
-    @AppStorage("onboarding.page") private var page = 0
-    @StateVar private var cartesia = Keychain.get("cartesia") ?? ""
-    @StateVar private var anthropic = Keychain.get("anthropic") ?? ""
-    @StateVar private var perms: [String: Bool] = [:]
-    @StateVar private var confirmSkip = false
-    @StateVar private var actualCm = ""
-    var recalibrating = false           // calibration steps only, opened from Settings
+    var recalibrating = false           // calibration steps only, opened from Settings / Live
     var done: () -> Void
+    @StateVar private var page = 0
+    @StateVar private var cameraDenied = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(spacing: 0) {
             HStack {
-                Text(recalibrating ? "Recalibrate camera" : "Set up eyeOS").font(.title2.bold())
+                if page > 0 { dots }
                 Spacer()
-                if recalibrating {
-                    Button("Cancel", action: cancel).keyboardShortcut(.cancelAction)
-                } else {
-                    Text("Step \(page + 1) of 6").foregroundStyle(.secondary)
+                if page < 3 {
+                    Button(recalibrating ? "Cancel" : "Skip", action: cancel).buttonStyle(.borderless).foregroundStyle(.secondary)
                 }
             }
-            Divider()
+            .padding(.horizontal, 20).padding(.top, 16)
             Group {
                 switch page {
-                case 0: keys
-                case 1: permissions
-                case 2: shortcuts
-                case 3: calibration(1, "Sit about an arm's length (~60 cm) from the screen and look at the dot.")
-                case 4: calibration(2, "Follow the dot with your eyes: center, then the four corners.")
-                default: calibration(3, "Work normally for 60 seconds. Blink naturally.")
+                case 0: welcome
+                case 1: distanceStep
+                case 2: gazeStep
+                default: finished
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 36).padding(.bottom, 28)
         }
-        .padding(24)
-        .frame(width: 620, height: 520)
+        .frame(width: 560, height: 500)
+        .onAppear { if recalibrating { page = 1 } }
     }
 
-    func next() {
-        store.calibration = nil
-        if page >= 5 { UserDefaults.standard.set(true, forKey: "onboarded"); page = 0; done() } else { page += 1 }
+    var dots: some View {
+        HStack(spacing: 6) {
+            ForEach(1...3, id: \.self) { i in
+                Capsule().fill(i <= page ? Color.teal : Color.white.opacity(0.15)).frame(width: i == page ? 22 : 8, height: 8)
+            }
+        }
+        .animation(.easeInOut, value: page)
     }
 
     func cancel() {
         store.overlays.hideCalibrationDots()
         store.calibration = nil
-        page = 0
+        if !recalibrating { UserDefaults.standard.set(true, forKey: "onboarded") }
         done()
     }
 
-    var keys: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("eyeOS watches your eyes through the Mac's camera to spot strain, and an agent decides how to help. Video never leaves your Mac except the occasional frame sent to Claude when the agent reasons.")
-                .fixedSize(horizontal: false, vertical: true)
-            SecureField("Cartesia API key (for the voice)", text: $cartesia)
-            SecureField("Anthropic API key (optional; your `claude` login is used otherwise)", text: $anthropic)
-            Text(store.status.bool("has_claude") ? "✓ Claude Code login found" : "✗ `claude` CLI not found; install Claude Code or add an API key")
-                .font(.caption).foregroundStyle(.secondary)
+    // MARK: pages
+
+    var welcome: some View {
+        VStack(spacing: 22) {
             Spacer()
-            HStack {
-                Spacer()
-                Button("Save and continue") {
-                    Keychain.set("cartesia", cartesia)
-                    Keychain.set("anthropic", anthropic)
-                    store.sidecar.restart()
-                    next()
-                }.keyboardShortcut(.defaultAction)
+            Image(systemName: "eye.circle.fill").font(.system(size: 72))
+                .foregroundStyle(LinearGradient(colors: [.teal, .indigo], startPoint: .topLeading, endPoint: .bottomTrailing))
+            VStack(spacing: 6) {
+                Text("Welcome to eyeOS").font(.system(size: 28, weight: .bold))
+                Text("Looks after your eyes while you work.").font(.title3).foregroundStyle(.secondary)
             }
+            VStack(alignment: .leading, spacing: 14) {
+                feature("lock.shield.fill", .green, "Video stays on your Mac")
+                feature("timer", .teal, "15-second calibration")
+                feature("moon.stars.fill", .indigo, "Silent while you're in deep focus")
+            }
+            .padding(.vertical, 6)
+            Spacer()
+            if cameraDenied {
+                VStack(spacing: 8) {
+                    Label("eyeOS needs the camera", systemImage: "video.slash.fill").foregroundStyle(.orange)
+                    Button("Open Camera Settings") {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")!)
+                    }
+                }
+            }
+            Button(action: start) {
+                Text("Get started").font(.headline).frame(width: 220, height: 30)
+            }
+            .buttonStyle(.borderedProminent).controlSize(.large).keyboardShortcut(.defaultAction)
         }
     }
 
-    var permissions: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            perm("Camera", "Privacy_Camera", key: "camera") { AVCaptureDevice.requestAccess(for: .video) { _ in } }
-            perm("Screen Recording (screenshots, screen brightness)", "Privacy_ScreenCapture", key: "screen") { CGRequestScreenCaptureAccess() }
-            perm("Accessibility (windows, reader mode)", "Privacy_Accessibility", key: "ax") {
-                AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
-            }
-            perm("Automation (dark mode, page text)", "Privacy_Automation", key: "automation") { _ = automationOK() }
-            Text("Chrome page reading also needs View › Developer › Allow JavaScript from Apple Events. Safari works out of the box.")
-                .font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            HStack {
-                Button("Check again") { refresh() }
-                Spacer()
-                Button("Continue") {
-                    if perms.values.allSatisfy({ $0 }) && perms.count == 4 { next() } else { confirmSkip = true }
-                }.keyboardShortcut(.defaultAction)
-            }
-        }
-        .onAppear(perform: refresh)
-        .confirmationDialog("Some permissions are missing", isPresented: $confirmSkip) {
-            Button("Continue anyway") { next() }
-        } message: { Text("Tools that need the missing permissions won't work until you grant them.") }
-    }
-
-    func perm(_ title: String, _ pane: String, key: String, request: @escaping () -> Void) -> some View {
-        HStack {
-            Image(systemName: perms[key] == true ? "checkmark.circle.fill" : "xmark.circle").foregroundStyle(perms[key] == true ? .green : .red)
-            Text(title)
-            Spacer()
-            Button("Request") { request(); DispatchQueue.main.asyncAfter(deadline: .now() + 1) { refresh() } }
-            Button("Open Settings") {
-                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!)
-            }
+    func feature(_ icon: String, _ color: Color, _ text: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon).font(.system(size: 15, weight: .semibold)).foregroundStyle(color)
+                .frame(width: 32, height: 32).background(color.opacity(0.15), in: RoundedRectangle(cornerRadius: 9))
+            Text(text).font(.body.weight(.medium))
         }
     }
 
-    func refresh() {
-        perms = ["camera": AVCaptureDevice.authorizationStatus(for: .video) == .authorized,
-                 "screen": CGPreflightScreenCaptureAccess(), "ax": AXIsProcessTrusted(), "automation": automationOK()]
-    }
-
-    func automationOK() -> Bool {
-        var err: NSDictionary?
-        NSAppleScript(source: "tell application \"System Events\" to get name of first process")?.executeAndReturnError(&err)
-        return err == nil
-    }
-
-    var shortcuts: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("macOS has no public API for Focus or the accessibility display toggles, so eyeOS runs Shortcuts you create once.")
-                .fixedSize(horizontal: false, vertical: true)
-            Text("In Shortcuts › New Shortcut, add the action and name it exactly:").font(.callout.weight(.medium))
-            Group {
-                Text("• eyeOS Focus On / eyeOS Focus Off — “Set Focus” › Do Not Disturb › On / Off (required for set_focus_mode)")
-                Text("• eyeOS Contrast On / Off — “Set Increase Contrast” (optional)")
-                Text("• eyeOS Transparency On / Off, eyeOS Motion On / Off — optional")
-            }.font(.callout).foregroundStyle(.secondary)
-            if let s = store.shortcuts {
-                Text(s.bool("focus_ok") ? "✓ Focus shortcuts found" : "✗ Focus shortcuts missing")
-                Text("Found: " + ((s["names"] as? [String]) ?? []).joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
+    func start() {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized: page = 1
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { ok in
+                DispatchQueue.main.async {
+                    if ok { store.sidecar.restart(); page = 1 } else { cameraDenied = true }
+                }
             }
-            Spacer()
-            HStack {
-                Button("Check again") { store.sidecar.command("check_shortcuts") }
-                Spacer()
-                Button("Skip (disables Focus)") { next() }
-                Button("Continue") { next() }.keyboardShortcut(.defaultAction).disabled(!(store.shortcuts?.bool("focus_ok") ?? false))
-            }
+        default: cameraDenied = true
         }
-        .onAppear { store.sidecar.command("check_shortcuts") }
     }
 
-    func calibration(_ step: Int, _ prompt: String) -> some View {
+    var distanceStep: some View {
+        CalibrationStep(step: 1, title: "Sit back at arm's length", subtitle: "About 60 cm from the screen. Look at the screen and hold still.",
+                        next: { page = 2 }) {
+            HStack(spacing: 18) {
+                Image(systemName: "person.fill").font(.system(size: 54))
+                VStack(spacing: 4) {
+                    Text("≈ 60 cm").font(.headline).foregroundStyle(.teal)
+                    HStack(spacing: 0) {
+                        Image(systemName: "arrowtriangle.left.fill").font(.caption2)
+                        Rectangle().frame(width: 110, height: 2)
+                        Image(systemName: "arrowtriangle.right.fill").font(.caption2)
+                    }
+                    .foregroundStyle(.teal)
+                }
+                Image(systemName: "laptopcomputer").font(.system(size: 58))
+            }
+            .foregroundStyle(.primary.opacity(0.85))
+        }
+    }
+
+    var gazeStep: some View {
+        CalibrationStep(step: 2, title: "Follow the dot", subtitle: "A dot moves to the center, then the four corners. Follow it with your eyes.",
+                        next: { page = 3 }) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10).strokeBorder(Color.white.opacity(0.3), lineWidth: 2).frame(width: 170, height: 110)
+                ForEach(Array([CGPoint(x: 0, y: 0), CGPoint(x: -70, y: -40), CGPoint(x: 70, y: -40), CGPoint(x: 70, y: 40),
+                               CGPoint(x: -70, y: 40)].enumerated()), id: \.offset) { i, p in
+                    Circle().fill(i == 0 ? Color.teal : Color.teal.opacity(0.4)).frame(width: i == 0 ? 14 : 9).offset(x: p.x, y: p.y)
+                }
+                Image(systemName: "eye").font(.title2).offset(y: 80)
+            }
+            .frame(height: 170)
+        }
+    }
+
+    var finished: some View {
+        VStack(spacing: 20) {
+            Spacer()
+            Image(systemName: "checkmark.seal.fill").font(.system(size: 64)).foregroundStyle(.mint)
+            Text("You're set").font(.system(size: 26, weight: .bold))
+            VStack(spacing: 10) {
+                Label("For the next minute eyeOS learns your normal blink rate. Just keep working.", systemImage: "eye")
+                Label("When you're in deep focus, eyeOS goes silent.", systemImage: "moon.stars")
+            }
+            .font(.callout).foregroundStyle(.secondary).frame(maxWidth: 400, alignment: .leading)
+            Spacer()
+            Button {
+                store.sidecar.command("calibrate", ["step": 3])  // 60 s baseline, in the background
+                UserDefaults.standard.set(true, forKey: "onboarded")
+                done()
+            } label: {
+                Text("Start using eyeOS").font(.headline).frame(width: 220, height: 30)
+            }
+            .buttonStyle(.borderedProminent).controlSize(.large).keyboardShortcut(.defaultAction)
+        }
+    }
+}
+
+/// One calibration step: illustration, face check, Start button that becomes a progress ring,
+/// then auto-advances when the sidecar reports success.
+struct CalibrationStep<Art: View>: View {
+    @EnvironmentObject var store: Store
+    let step: Int
+    let title: String
+    let subtitle: String
+    let next: () -> Void
+    @ViewBuilder var art: Art
+
+    var body: some View {
         let c = store.calibration?.int("step") == step ? store.calibration : nil
         let phase = c?.str("phase")
-        return VStack(alignment: .leading, spacing: 14) {
-            Text("Calibration \(step) of 3").font(.headline)
-            Text(prompt)
-            if step != 2 {
-                HStack { Spacer(); Circle().fill(.teal).frame(width: 18, height: 18); Spacer() }.padding(.vertical, 30)
+        let running = phase == "started" || phase == "progress"
+        VStack(spacing: 18) {
+            Spacer(minLength: 4)
+            art.frame(height: 150)
+            VStack(spacing: 6) {
+                Text(title).font(.system(size: 24, weight: .bold))
+                Text(subtitle).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 400)
             }
-            if step == 1 {
-                TextField("Actual distance in cm (optional)", text: $actualCm).frame(width: 260)
+            faceCheck
+            Spacer(minLength: 4)
+            if phase == "failed" {
+                Label(c?.obj("result")?.str("reason") ?? "That didn't work. Try again.", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange).font(.callout)
             }
-            if let c {
-                ProgressView(value: c.num("progress") ?? 0)
-                if phase == "failed" { Text(c.obj("result")?.str("reason") ?? "Failed").foregroundStyle(.red) }
-                if phase == "done" { Text("Done ✓").foregroundStyle(.green) }
-            }
-            if !store.connected { Text("Waiting for the sidecar to start…").foregroundStyle(.secondary) }
-            Spacer()
-            HStack {
-                Button("Back") { store.calibration = nil; page -= 1 }
-                    .disabled(recalibrating && step == 1)
-                Spacer()
-                Button(phase == "failed" ? "Retry" : "Start") {
-                    var args: J = ["step": step]
-                    if step == 1, let cm = Double(actualCm) { args["distance_cm"] = cm }
-                    store.sidecar.command("calibrate", args)
-                    if step == 2 { store.overlays.showCalibrationDots() }
+            if running {
+                ZStack {
+                    Circle().stroke(Color.white.opacity(0.1), lineWidth: 5)
+                    Circle().trim(from: 0, to: c?.num("progress") ?? 0).stroke(Color.teal, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                        .rotationEffect(.degrees(-90)).animation(.linear(duration: 0.2), value: c?.num("progress"))
+                    Text("\(Int((c?.num("progress") ?? 0) * 100))%").font(.caption.monospacedDigit())
                 }
-                .disabled(!store.connected || phase == "started" || phase == "progress")
-                Button(step == 3 ? "Finish" : "Continue") { next() }.keyboardShortcut(.defaultAction).disabled(phase != "done")
+                .frame(width: 48, height: 48)
+            } else if phase == "done" {
+                Label("Done", systemImage: "checkmark.circle.fill").foregroundStyle(.mint).font(.headline).frame(height: 48)
+            } else {
+                Button {
+                    store.sidecar.command("calibrate", ["step": step])
+                    if step == 2 { store.overlays.showCalibrationDots() }
+                } label: {
+                    Text(phase == "failed" ? "Try again" : "Start").font(.headline).frame(width: 220, height: 30)
+                }
+                .buttonStyle(.borderedProminent).controlSize(.large).keyboardShortcut(.defaultAction)
+                .disabled(!store.connected || !store.metrics.bool("face_present"))
             }
         }
-        .onChange(of: phase) { if step == 2, phase == "done" || phase == "failed" { store.overlays.hideCalibrationDots() } }
+        .onChange(of: phase) {
+            if step == 2, phase == "done" || phase == "failed" { store.overlays.hideCalibrationDots() }
+            if phase == "done" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { store.calibration = nil; next() }
+            }
+        }
+    }
+
+    @ViewBuilder var faceCheck: some View {
+        if !store.connected {
+            Pill(text: "Starting eyeOS…", color: .secondary, spinning: true)
+        } else if store.metrics.bool("face_present") {
+            Pill(text: "Face found", icon: "checkmark.circle.fill", color: .mint)
+        } else {
+            Pill(text: "Looking for your face…", icon: "person.crop.circle.badge.questionmark", color: .orange)
+        }
     }
 }
 

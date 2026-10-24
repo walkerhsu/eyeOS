@@ -10,6 +10,7 @@ CATEGORIES = [
     ("coding", ("com.microsoft.VSCode", "com.apple.dt.Xcode", "com.todesktop.230313mzl4w4u92", "com.googlecode.iterm2",
                 "com.apple.Terminal", "com.jetbrains.", "dev.zed.Zed")),
     ("design", ("com.figma.Desktop", "com.bohemiancoding.sketch3")),
+    ("writing", ("notion.id", "md.obsidian", "com.apple.iWork.Pages", "com.microsoft.Word", "com.apple.Notes")),
 ]
 BROWSERS = ("com.apple.Safari", "com.google.Chrome", "company.thebrowser.Browser", "org.mozilla.firefox")
 CALL_APPS = ("us.zoom.xos", "com.apple.FaceTime", "com.microsoft.teams2")
@@ -93,6 +94,12 @@ def screen_luma():
 def seconds_since_key():
     from Quartz import CGEventSourceSecondsSinceLastEventType, kCGEventSourceStateCombinedSessionState, kCGEventKeyDown
     return CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateCombinedSessionState, kCGEventKeyDown)
+
+
+def seconds_since_input():
+    """Keyboard, mouse, scroll or trackpad: any sign the user is working."""
+    from Quartz import CGEventSourceSecondsSinceLastEventType, kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType
+    return CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType)
 
 
 # ---------- actions ----------

@@ -40,7 +40,7 @@ TRIGGERS = {
     "dark_room_bright_screen": (0, 60, 0, 15),
     "no_break": (1200, 0, 120, 0),
     "break_taken": (0, 0, 0, 0),
-    "heartbeat": (300, 0, 60, 0),
+    "heartbeat": (900, 0, 180, 0),
 }
 
 
@@ -60,11 +60,15 @@ SETTINGS = {
     "tracking.paused": (False, _bool),
     "agent.enabled": (True, _bool),
     "agent.model": ("claude-sonnet-5-5", lambda v: v in ("claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5")),
-    "agent.heartbeat_s": (300, _num(60, 1800, int)),
-    "agent.global_gap_s": (45, _num(10, 600, int)),
-    "agent.trigger_cooldown_s": (180, _num(10, 1800, int)),
+    "agent.provider": ("claude", lambda v: v in ("claude", "codex")),
+    "agent.codex_model": ("", lambda v: isinstance(v, str) and len(v) < 64),  # "" = Codex's own default
+    "agent.heartbeat_s": (900, _num(60, 3600, int)),
+    "agent.global_gap_s": (120, _num(10, 1800, int)),
+    "agent.trigger_cooldown_s": (600, _num(10, 3600, int)),
     "agent.send_images": (True, _bool),
     "agent.max_tool_iterations": (6, _num(1, 10, int)),
+    "zen.enabled": (True, _bool),
+    "zen.enter_min": (10, _num(1, 60)),
     "quiet_apps": ([], lambda v: isinstance(v, list) and all(_str(x) for x in v) and len(v) < 100),
     "calibration.distance_cm": (60, _num(20, 150)),
     "advanced.dip_start_o": (0.75, _num(0, 1.2)),
