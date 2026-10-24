@@ -23,6 +23,7 @@ final class Overlays {
     }
 
     func dismiss(_ rid: String) {
+        pinned.remove(rid)
         guard let p = panels.removeValue(forKey: rid) else { return }
         guard let i = banners.firstIndex(of: rid) else { return p.orderOut(nil) }
         banners.remove(at: i)
@@ -40,8 +41,14 @@ final class Overlays {
         let screen = NSScreen.main?.frame ?? .init(x: 0, y: 0, width: 1440, height: 900)
         switch m.str("kind") ?? "" {
         case "notice":
-            present(rid, AnyView(Toast(text: p.str("text") ?? "")), at: .banner)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in self?.dismiss(rid) }
+            let text = p.str("text") ?? ""
+            present(rid, AnyView(Toast(text: text)), at: .banner)
+            // longer notices stay up long enough to read or expand; an expanded one stays until dismissed
+            let shownFor = min(10, max(4, Double(text.count) / 15))
+            DispatchQueue.main.asyncAfter(deadline: .now() + shownFor) { [weak self] in
+                guard let self, !self.pinned.contains(rid) else { return }
+                self.dismiss(rid)
+            }
         case "blink_pulse":
             let count = p.int("count") ?? 2, intensity = p.num("intensity") ?? 0.5
             present(rid, AnyView(EdgePulse(count: count, intensity: intensity)), frame: screen, level: .screenSaver, clickThrough: true)
@@ -145,7 +152,18 @@ final class Overlays {
 
     enum Anchor { case banner, bottomCenter, center }
     private var banners: [String] = []  // top-right stack, newest first
+    private var pinned: Set<String> = []  // banners the user expanded: no auto-dismiss
     private let bannerWidth: CGFloat = 360
+
+    /// A banner's content changed height (text expanded or collapsed): resize its panel and restack.
+    private func refit(_ rid: String) {
+        guard let p = panels[rid], let host = p.contentView else { return }
+        let vis = NSScreen.main?.visibleFrame ?? .init(x: 0, y: 0, width: 1440, height: 900)
+        var f = p.frame
+        f.size.height = min(host.fittingSize.height, vis.height - 20)
+        p.setFrame(f, display: false)
+        layoutBanners()
+    }
 
     /// Stacks banners under the menu bar like macOS notifications, animating into place.
     private func layoutBanners() {
@@ -167,7 +185,13 @@ final class Overlays {
     private func present(_ rid: String, _ view: AnyView, size: CGSize = .zero, at anchor: Anchor = .center, frame: CGRect? = nil,
                          level: NSWindow.Level = .floating, keyable: Bool = false, clickThrough: Bool = false) {
         let vis = NSScreen.main?.visibleFrame ?? .init(x: 0, y: 0, width: 1440, height: 900)
-        let host = NSHostingView(rootView: anchor == .banner ? AnyView(view.frame(width: bannerWidth)) : view)
+        let handle = BannerHandle(
+            expanded: { [weak self] on in
+                if on { self?.pinned.insert(rid) }
+                DispatchQueue.main.async { self?.refit(rid) }  // after SwiftUI applies the new layout
+            },
+            close: { [weak self] in self?.dismiss(rid) })
+        let host = NSHostingView(rootView: anchor == .banner ? AnyView(view.frame(width: bannerWidth).environment(\.banner, handle)) : view)
         // banners take their content's height (capped) so long agent text can't run off screen
         let fit = CGSize(width: bannerWidth, height: min(host.fittingSize.height, 380))
         let rect = frame ?? {
@@ -229,10 +253,69 @@ private struct Card<Content: View>: View {
     }
 }
 
+/// Lets banner content reach its panel: resize when text expands, close from inside the card.
+struct BannerHandle {
+    var expanded: (Bool) -> Void = { _ in }
+    var close: () -> Void = {}
+}
+
+private struct BannerHandleKey: EnvironmentKey { static let defaultValue = BannerHandle() }
+
+extension EnvironmentValues {
+    var banner: BannerHandle {
+        get { self[BannerHandleKey.self] }
+        set { self[BannerHandleKey.self] = newValue }
+    }
+}
+
+/// Banner body text clipped to a few lines, with a chevron to expand it when it doesn't fit.
+/// Expanding grows the banner and keeps it on screen; `dismissible` adds a Dismiss button for cards with no other controls.
+struct ExpandableText: View {
+    let text: String
+    var lines = 3
+    var dismissible = false
+    @Environment(\.banner) private var banner
+    @StateVar private var expanded = false
+    @StateVar private var shownHeight: CGFloat = 0
+    @StateVar private var fullHeight: CGFloat = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(text).lineLimit(expanded ? nil : lines).fixedSize(horizontal: false, vertical: true)
+                .background(height { if !expanded { shownHeight = $0 } })
+                .background(Text(text).fixedSize(horizontal: false, vertical: true).hidden().background(height { fullHeight = $0 }))
+            if expanded || fullHeight > shownHeight + 1 {
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    if expanded && dismissible { Button("Dismiss") { banner.close() }.controlSize(.small) }
+                    Button {
+                        expanded.toggle()
+                        banner.expanded(expanded)
+                    } label: {
+                        Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold))
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                            .animation(.easeOut(duration: 0.2), value: expanded)
+                            .frame(width: 20, height: 20).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary)
+                    .help(expanded ? "Show less" : "Show more")
+                    .accessibilityLabel(expanded ? "Show less" : "Show more")
+                }
+            }
+        }
+    }
+
+    private func height(_ set: @escaping (CGFloat) -> Void) -> some View {
+        GeometryReader { g in
+            Color.clear.onAppear { set(g.size.height) }.onChange(of: g.size.height) { _, h in set(h) }
+        }
+    }
+}
+
 struct Toast: View {
     let text: String
     var body: some View {
-        Card { Text(text).lineLimit(2) }
+        Card { ExpandableText(text: text, lines: 2, dismissible: true) }
     }
 }
 
@@ -345,7 +428,7 @@ struct LookAwayCard: View {
     @StateVar private var left: Double = 0
     var body: some View {
         Card(title: title, icon: icon) {
-            Text(message).lineLimit(3).foregroundStyle(.secondary)
+            ExpandableText(text: message).foregroundStyle(.secondary)
             HStack {
                 ZStack {
                     Circle().stroke(.secondary.opacity(0.3), lineWidth: 3)
@@ -425,7 +508,7 @@ struct AskView: View {
     @StateVar private var text = ""
     var body: some View {
         Card {
-            Text(question).lineLimit(3)
+            ExpandableText(text: question)
             HStack(spacing: 6) {
                 ForEach(options.prefix(4), id: \.self) { o in Button(o) { answer(o, text) }.lineLimit(1) }
                 Spacer(minLength: 0)
@@ -444,9 +527,9 @@ struct ApprovalView: View {
     let choose: (String) -> Void
     var body: some View {
         Card(title: payload.str("question") ?? "Allow eyeOS?", icon: toolIcons[payload.str("tool") ?? ""] ?? "eye") {
-            Text(payload.str("effect") ?? "").lineLimit(2)
+            ExpandableText(text: payload.str("effect") ?? "", lines: 2)
             if let r = payload.str("reason"), !r.isEmpty {
-                Text(r).font(.caption).foregroundStyle(.secondary).lineLimit(2).help(r)
+                ExpandableText(text: r, lines: 2).font(.caption).foregroundStyle(.secondary)
             }
             HStack(spacing: 6) {
                 Button("Never") { choose("never") }
