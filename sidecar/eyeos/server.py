@@ -194,7 +194,14 @@ class App:
                 if self.zen.active:
                     self.triggers.pending.clear()  # Zen: keep recording, never wake the agent
                     continue
-                run = self.triggers.take(time.time(), self.agent.busy, s)
+                c = self.screen.fresh(90)
+                interruptible = not c or c.get("interruptibility") is None or c["interruptibility"] >= 0.35
+                if not interruptible and self.triggers.pending and set(self.triggers.pending) != self._held:
+                    self._held = set(self.triggers.pending)  # log each held batch once
+                    self.log_event("system", None, c["interruptibility"],
+                                   {"event": "deferred", "triggers": sorted(self._held),
+                                    "reason": f"{(c.get('situation') or 'busy').replace('_', ' ')}: {c.get('reason') or ''}".strip(": ")})
+                run = self.triggers.take(time.time(), self.agent.busy, s, interruptible)
                 if run and s["agent.enabled"] and self.agent.available():
                     asyncio.create_task(self.agent.run(run))
             except Exception:  # noqa: BLE001
@@ -239,6 +246,7 @@ class App:
                     self.engine.set_screen(lum, dark)
 
     _screen_now = False
+    _held = set()
 
     def refresh_screen_soon(self):
         self._screen_now = True

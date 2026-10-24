@@ -106,3 +106,15 @@ def test_too_close_skips_global_gap(tmp_path):
     assert t.take(1010, False, s)  # 10 s after the last run, still allowed
     t.pending = {"long_stare": {"id": "long_stare"}}
     assert t.take(1020, False, s) is None
+
+
+def test_conductor_holds_nudges_but_not_priority_ones(tmp_path):
+    s = DB(tmp_path / "t.db").settings()
+    t = Triggers()
+    t.pending = {"low_blink_rate": {"id": "low_blink_rate", "fired_at": 1000}}
+    assert t.take(1010, False, s, interruptible=False) is None and "low_blink_rate" in t.pending
+    assert t.take(1020, False, s, interruptible=True)          # good moment: it goes out
+    t.pending = {"eye_rub": {"id": "eye_rub", "fired_at": 2000}}
+    assert t.take(2001, False, s, interruptible=False)         # rubbing can't wait
+    t.pending = {"long_stare": {"id": "long_stare", "fired_at": 3000}}
+    assert t.take(3000 + 601, False, s, interruptible=True) is None and not t.pending  # held too long: dropped

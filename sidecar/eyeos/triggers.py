@@ -3,7 +3,8 @@ from .db import TRIGGERS
 from .zen import blink_base, blink_high, blink_low
 
 GRACE_S = 3.0          # a sustained condition survives dropouts this short (one noisy frame used to reset it)
-PRIORITY = {"eye_rub", "too_close"}  # skip the global gap between runs: act while it's still happening
+PRIORITY = {"eye_rub", "too_close"}  # skip the global gap and the conductor's "not now": act while it's happening
+STALE_S = 600          # a nudge held this long (e.g. through a meeting) is no longer relevant
 
 
 class Triggers:
@@ -93,9 +94,17 @@ class Triggers:
             return bool(g("face_present")), None
         return False, None
 
-    def take(self, now, busy, s):
-        """Pop the merged trigger list if a run may start now, else None."""
+    def take(self, now, busy, s, interruptible=True):
+        """Pop the merged trigger list if a run may start now, else None.
+
+        interruptible: the conductor's call on whether this is a good moment. When it isn't, non-priority triggers
+        stay queued (and expire after STALE_S) instead of waking the agent.
+        """
+        for tid in [k for k, t in self.pending.items() if now - t.get("fired_at", now) > STALE_S]:
+            del self.pending[tid]
         if busy or not self.pending:
+            return None
+        if not interruptible and not set(self.pending) & PRIORITY:
             return None
         gap = 30 if s["demo.enabled"] else s["agent.global_gap_s"]
         hb = 180 if s["demo.enabled"] else s["agent.heartbeat_s"]
