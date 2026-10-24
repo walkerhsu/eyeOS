@@ -21,7 +21,7 @@ from . import tools as T
 from .agent import CLIS, EXERCISES, Agent
 from .blur import StareBlur
 from .db import DB, TRIGGERS, validate_setting
-from .metrics import Engine
+from .metrics import CHECK, Engine, blink_check, blink_thresholds, classify_dip
 from . import reflection as R
 from .screen_watch import ScreenWatch
 from .tools import system as S
@@ -31,9 +31,12 @@ from .zen import Zen, eye_score, recap_stats
 
 VERSION = "0.1.0"
 EVENT_KIND = {"rub": "rub", "yawn": "yawn", "break": "break", "eyes_closed": "blink_anomaly", "blink": "blink_anomaly"}
-CAL_SECONDS = {1: 3, 2: 10, 3: 60}
+BLINK_CHECK = 4      # the prompted blinks, run after gaze and before the baseline (numbered 4 so logged steps keep their meaning)
+CAL_SECONDS = {1: 3, 2: 10, 3: 60, BLINK_CHECK: 8}  # the blink check ends early once the 3 blinks are in
 GAZE_DOTS = ["center", "top_left", "top_right", "bottom_right", "bottom_left"]
-MIN_CAL_BLINKS = 3    # in the 60 s baseline; fewer is unusual enough that blinks were probably missed
+CHECK_BLINKS = 3     # blinks the blink check asks for
+MIN_CAL_BLINKS = 3   # in the 60 s baseline; fewer is unusual enough that blinks were probably missed
+LOW_CAL_FPS = 15     # below this a quick blink spans only a frame or two and is easily missed
 HISTORY_KEYS = ("blink_rate", "perclos", "distance_cm", "squint_delta", "incomplete_pct", "eye_score", "current_stare_s",
                 "longest_stare_s", "gaze_on_screen", "blink_duration_ms", "since_real_break_s", "zen")
 
@@ -491,10 +494,11 @@ class App:
         self.log_event("system", None, None, {"event": event, "step": step, "reason": reason, **extra})
 
     async def _calibrate(self, step, args, cal_id):
-        samples, dips = [], []
+        samples = []
         dur = CAL_SECONDS[step]
         with self.lock:
             self.engine.recorder = samples.append
+            ear0 = self.engine.cal["ear_open"]  # the open-eye level this step's dips are measured against
         await self.send({"type": "calibration", "step": step, "phase": "started", "progress": 0, "seconds": dur})
         t0 = time.time()
         while time.time() - t0 < dur:
@@ -503,10 +507,14 @@ class App:
             msg = {"type": "calibration", "step": step, "phase": "progress", "progress": round(p, 3)}
             if step == 2:
                 msg["target"] = GAZE_DOTS[min(4, int(p * 5))]
+            elif step == BLINK_CHECK:  # tick off each blink; finish shortly after the last one
+                seen = blink_check(list(samples), self.engine.adv)["blinks"]
+                msg["blinks"] = len(seen)
+                if len(seen) >= CHECK_BLINKS and samples[-1]["ts"] - seen[-1]["end"] > 0.6:
+                    break
             await self.send(msg)
         with self.lock:
             self.engine.recorder = None
-            blinks = [b for b in self.engine.blinks if b[0] >= t0]
         face = [s for s in samples if s["present"]]
         if self.settings["tracking.paused"]:
             return await self.calibration_failed(step, "Tracking was paused during the step. Resume it and try again.", cal_id)
@@ -514,11 +522,17 @@ class App:
             return await self.calibration_failed(step, "The camera isn't sending video. Check it's not in use by another app and try again.", cal_id)
         if len(face) < 0.5 * len(samples):
             return await self.calibration_failed(step, "We couldn't see your face for most of the step. Try again.", cal_id)
+        span = samples[-1]["ts"] - samples[0]["ts"]
+        fps = (len(samples) - 1) / span if span > 0 else None
         # weak data: still saved, but the user is told it may be off
         warnings = []
         if len(face) < 0.8 * len(samples):
+            if step == BLINK_CHECK:  # 3 blinks are too few to lose any
+                return await self.calibration_failed(step, "We couldn't see your face clearly. Face the camera and try again.", cal_id)
             warnings.append("Your face was out of view for part of the step.")
-        cal = {}
+        if step in (3, BLINK_CHECK) and fps and fps < LOW_CAL_FPS:
+            warnings.append(f"The camera is running slowly ({fps:.0f} fps), so quick blinks can be missed.")
+        cal, log, done = {}, {}, {}  # log: extra detail kept in the calibration row; done: extra for the app
         if step == 1:
             cal["w_px_cal"] = round(statistics.median(s["w_px"] for s in face), 3)
             cal["distance_cm"] = float(args.get("distance_cm") or self.settings["calibration.distance_cm"])
@@ -538,20 +552,52 @@ class App:
             cal.update(gx_min=min(gxs), gx_max=max(gxs), gy_min=min(gys), gy_max=max(gys))
             if not all(per_dot):
                 warnings.append("We couldn't see your eyes at some of the dots.")
+        elif step == BLINK_CHECK:
+            check = blink_check(samples, self.engine.adv)
+            blinks = check["blinks"]
+            log["dips"] = [{"t": round(d["end"] - t0, 2), "min_o": d["min_o"], "duration": d["duration"], "kind": kind}
+                           for kind, ds in (("blink", blinks), ("held", check["held"])) for d in ds]
+            measured = {**log, "fps": fps and round(fps, 1)}
+            if len(blinks) < 2:
+                return await self.calibration_failed(step, "We didn't see your blinks. Check the lighting and any glare on "
+                                                           "glasses, and face the camera.", cal_id, **measured)
+            depths = [b["min_o"] for b in blinks]
+            if statistics.median(depths) > CHECK["max_min_o"]:  # blinks would be indistinguishable from glances
+                return await self.calibration_failed(step, "We couldn't see your eyes close clearly. Check the lighting and any "
+                                                           "glare on glasses, and face the camera.", cal_id, **measured)
+            if len(blinks) < CHECK_BLINKS:
+                warnings.append(f"We only saw {len(blinks)} of the {CHECK_BLINKS} blinks.")
+            elif len(blinks) > CHECK_BLINKS:
+                warnings.append("We saw more blinks than we asked for.")
+            if max(depths) - min(depths) > 0.25:
+                warnings.append("Your blinks looked quite different from each other.")
+            if check["held"]:
+                warnings.append("A blink was held closed, so we left it out. Blink at your normal speed.")
+            # applied now, so the 60 s baseline that follows already uses them
+            cal["ear_open"] = round(check["ear_open"], 4)
+            cal.update(blink_thresholds(blinks, self.engine.adv))
+            done["blinks"] = len(blinks)
         else:
             open_ = [s for s in face if s.get("state") == "OPEN"]
             if not open_:
                 warnings.append("We couldn't get a clear look at your eyes.")
-            if len(blinks) < MIN_CAL_BLINKS:
-                warnings.append("We didn't catch many blinks.")
             cal["ear_open"] = round(statistics.median(s["ear"] for s in open_), 4) if open_ else 0.28
             cal["squint_score"] = round(statistics.median(s["squint_score"] for s in open_), 4) if open_ else 0.0
+            # the dips were measured against the open-eye level at the start: rescale them to the new one and recount
+            th, scale = {**self.engine.cal, **cal}, ear0 / cal["ear_open"]
+            log["dips"] = [{"t": round(d["end"] - t0, 2), "min_o": round(d["min_o"] * scale, 3), "duration": round(d["duration"], 3),
+                            "kind": classify_dip(d["min_o"] * scale, d["duration"], self.engine.adv, th)}
+                           for d in (s["dip"] for s in samples if "dip" in s)]
+            counted = [d for d in log["dips"] if d["kind"]]
+            full = [d for d in counted if d["kind"] == "blink"]
+            if len(counted) < MIN_CAL_BLINKS:
+                warnings.append("We didn't catch many blinks.")
             minutes = len(face) / len(samples) * dur / 60
-            cal["blink_rate"] = round(len(blinks) / minutes, 1) if minutes else None
-            cal["blink_duration_ms"] = round(1000 * statistics.fmean(b[1] for b in blinks)) if blinks else None
+            cal["blink_rate"] = round(len(counted) / minutes, 1) if minutes else None
+            cal["blink_duration_ms"] = round(1000 * statistics.fmean(d["duration"] for d in full)) if full else None
             cal["calibrated"] = True
         cal = {k: (round(v, 4) if isinstance(v, float) else v) for k, v in cal.items()}
-        self.db.x("UPDATE calibration SET data=? WHERE id=?", (json.dumps({**cal, "warnings": warnings}), cal_id))
+        self.db.x("UPDATE calibration SET data=? WHERE id=?", (json.dumps({**cal, "warnings": warnings, **log}), cal_id))
         with self.lock:
             self.engine.set_cal(cal)
             if step == 1:
@@ -559,8 +605,9 @@ class App:
                 self.engine.dist_raw.clear()
         self.db.save_baseline(self.engine.cal, f"calibration step {step}")
         self.log_event("system", None, None, {"event": "calibration_weak" if warnings else "calibration", "step": step,
-                                              **cal, "warnings": warnings})
-        await self.send({"type": "calibration", "step": step, "phase": "done", "progress": 1, "result": cal, "warnings": warnings})
+                                              **cal, **done, "warnings": warnings})
+        await self.send({"type": "calibration", "step": step, "phase": "done", "progress": 1, "result": cal, "warnings": warnings,
+                         **done})
         await self.send_status(force=True)
 
     # ---------- websocket I/O ----------
@@ -749,7 +796,7 @@ class App:
         elif name == "calibration_end":
             self.cal_hold_until = 0.0
         elif name == "calibrate":
-            if int(args.get("step", 0)) in (1, 2):  # the setup sheet: hold from its first Start until it closes
+            if int(args.get("step", 0)) in (1, 2, BLINK_CHECK):  # the setup sheet: hold from its first Start until it closes
                 self.cal_hold_until = time.time() + 180  # safety net if the app never says calibration_end
             asyncio.create_task(self.calibrate(int(args.get("step", 0)), args))
         elif name == "reset_approvals":
