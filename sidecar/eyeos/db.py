@@ -48,6 +48,26 @@ TRIGGERS = {
     "heartbeat": (900, 0, 180, 0),
 }
 
+# What each fired trigger's value measures, sent to the agent with it (a bare 181 for no_break got read as minutes)
+TRIGGER_UNITS = {
+    "low_blink_rate": "blinks per minute",
+    "long_stare": "seconds without blinking",
+    "incomplete_blinks": "fraction of blinks that were incomplete (0-1)",
+    "drowsy": "fraction of time eyes were closed (0-1)",
+    "long_blinks": "count of long blinks, recent",
+    "sustained_squint": "squint score above your normal",
+    "too_close": "cm from the screen",
+    "eye_rub": "event",
+    "yawning": "yawns in the last 5 minutes",
+    "dark_room_bright_screen": "room brightness (0-255)",
+    "no_break": "seconds since the last real break",
+    "frequent_blinks": "blinks per minute",
+    "blink_decline": "fraction the blink rate fell over ~12 minutes (0-1)",
+    "posture_drift": "number of posture issues",
+    "break_taken": "event",
+    "heartbeat": "none",
+}
+
 
 def _num(lo=None, hi=None, typ=(int, float)):
     def check(v):

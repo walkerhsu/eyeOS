@@ -160,3 +160,14 @@ def test_a_touch_sends_the_cue(tmp_path):
     asyncio.run(go())
     assert [m["style"] for m in app.sent if m.get("type") == "habit_cue"] == ["glow+sound"]
     assert app.db.q("SELECT COUNT(*) n FROM events WHERE kind='touch'")[0]["n"] == 1
+
+
+def test_agent_sees_trigger_units(tmp_path):
+    from eyeos.db import TRIGGER_UNITS, TRIGGERS
+    assert set(TRIGGER_UNITS) == set(TRIGGERS)  # a new trigger needs its unit too
+    app = make(tmp_path)
+
+    async def ctx():
+        return await app.agent.context([{"id": "no_break", "value": 181, "fired_at": 0}])
+    tr = asyncio.run(ctx())["triggers"][0]
+    assert tr["value"] == 181 and "seconds" in tr["unit"]  # 181 s, not 181 minutes
