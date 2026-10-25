@@ -2,7 +2,9 @@
 
 ![eyeOS](eyeOS-title.png)
 
-eyeOS is for those constantly on screens, not by choice, but because their work demands it: locked-in students pulling all nighters for deadlines, engineers, IT, accountants.
+eyeOS is a...
+
+eyeOS for those constantly on screens, not by choice, but because their work demands it:  locked-in students pulling all nighters, engineers, IT, accountants, desk job workers—all chasing deadlines.
 
 The name is literal. An OS schedules work and manages resources. eyeOS schedules rest, and manages brightness, dark mode, contrast.
 
