@@ -9,22 +9,14 @@ Our app centers around one question:
 
 **Can you work on your computer rigorously, as usual, while taking care of your eyes simultaneously?**
 
+_spoiler: our answer is yes_
+
 ## What it does
-eyeOS is an AI eye-habit coach that lives in your Mac's menu bar and improves how you use your eyes without ever asking you to stop working. Using the built-in camera, it catches the habits that strain your eyes, such as staring without blinking, squinting, leaning in, and rubbing your eyes, and corrects each one in the moment with a nudge small enough to work through. A persistent memory tracks which fixes actually help you and what triggers your habits, so eyeOS gets better every session and small changes compound into lasting habits.
+eyeOS is an AI eye-habit coach that lives in your Mac's menu bar, looking after your eye health while you work. Using your laptop camera, it catches the habits that strain your eyes, like staring without blinking, squinting, leaning in, and rubbing your eyes, and corrects each one in the moment with a nudge small enough to work through. A persistent memory measures which fixes actually help you and learns what triggers your habits, so eyeOS gets better every session and small changes compound into lasting habits. It reads how interruptible you are and saves breaks for natural pauses, and when it's time to rest, a Cartesia voice talks you through eye exercises you can do with your eyes closed. Camera frames never leave your Mac.
 
-It's for people who are on screens not by choice, but because their work demands it: students pulling all-nighters before a deadline, engineers, IT, accountants, and anyone at a desk all day. That's why our answer to the question is yes: you keep working, and your eyes still get looked after.
+It's built for people who are on screens not by choice, but because their work demands it: students pulling all-nighters, engineers, IT, accountants, and anyone at a desk all day. So every fix works with your focus, not against it. Stare too long and the screen softens until you blink. Lean in and the edges dim until you sit back. Squint and eyeOS offers bigger text. Reach to rub your eyes and it offers palming instead. When more is needed, Claude picks the smallest change that should work. During deep work, whether a model on your Mac detects it or you turn on Zen yourself, eyeOS goes silent but keeps measuring, then shows you a recap when you come out of it.
 
-It starts by noticing what you don't. Through the built-in camera, eyeOS picks up habits most people never catch in themselves: blinking too little or only halfway, staring, leaning in, squinting, rubbing your eyes. Together they make up an eye score you can watch live.
-
-When one of those habits shows up, eyeOS nudges you out of it, quietly enough that you keep working. Stare too long and the screen softens until you blink. Lean in and the edges dim until you sit back. Squint and eyeOS offers bigger text, then does it automatically once you've said yes a couple of times. Reach to rub your eyes and it offers palming instead. When more is needed, Claude picks the smallest change that should work.
-
-Then it checks whether the nudge actually helped. eyeOS reaches for what works first, and drops what doesn't help or what you've declined. It also learns what leads up to your habits, like "most of your eye rubs come after 45 minutes without a break," so next time it can step in before they start. You can watch your progress too, like today's eye rubs against your weekly average. Every session builds on the last.
-
-None of this should cost you focus. A model running on your Mac reads the screen to tell deep work from a good moment to pause. During deep work eyeOS goes silent but keeps measuring, then shows you a recap when you come out of it.
-
-When it is time to rest, your eyes are closed, so Cartesia's voice talks you through the exercises. The camera follows along, so the voice responds to what you're actually doing: counting your blinks, or noticing when you peek. The same voice can read a page aloud.
-
-Through all of it, your data stays yours. Camera frames never leave your Mac, and Claude never sees an image of you or your screen. Claude can't change anything on your Mac until you've approved it, and eyeOS never diagnoses.
+Every nudge is checked against what your eyes did next. eyeOS reaches for what works first, drops what doesn't help or what you've declined, and learns patterns like "most of your eye rubs come after 45 minutes without a break," so it can step in before they start. You can watch your progress too, like today's eye rubs against your weekly average. When you rest, the camera follows along, so the voice can count your blinks and notice when you peek. Claude never sees an image of you or your screen, can't change anything on your Mac until you've approved it, and eyeOS never diagnoses.
 
 ## How we built it
 The app is SwiftUI: Live, Log, Settings, and a menu bar extra. On launch it starts a Python sidecar and talks to it over a token-authenticated WebSocket bound to localhost.
