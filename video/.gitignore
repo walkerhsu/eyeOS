@@ -1,0 +1,4 @@
+node_modules/
+out/
+# raw voiceover recordings; the clips use the copies in public/
+/*.m4a

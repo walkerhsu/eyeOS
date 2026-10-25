@@ -1,0 +1,23 @@
+{
+  "name": "eyeos-demo-video",
+  "private": true,
+  "scripts": {
+    "studio": "remotion studio",
+    "render": "remotion render MemorySegment out/memory-segment.mp4",
+    "render:silent": "remotion render MemorySegment out/memory-segment-silent.mp4 --muted",
+    "render:agent": "remotion render AgentTab out/agent-tab.mp4",
+    "render:log": "remotion render LogTab out/log-tab.mp4",
+    "render:onboarding": "remotion render Onboarding out/onboarding.mp4 --muted",
+    "render:gallery": "for g in g01-hero g02-nudges g03-learning g04-agent g05-log g06-privacy g07-report; do remotion still $g out/gallery/$g.png; done"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.534",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.534"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "typescript": "5.6.3"
+  }
+}
