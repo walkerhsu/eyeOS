@@ -2,19 +2,19 @@
 
 ![eyeOS](eyeOS-title.png)
 
-eyeOS is for computer science students in deadline week, and hackathon teams in the 24-hour version: one long MacBook session, a clock on the other end.
+eyeOS is for those constantly on screens, not by choice, but because their work demands it: locked-in students pulling all nighters for deadlines, engineers, IT, accountants.
 
 The name is literal. An OS schedules work and manages resources. eyeOS schedules rest, and manages brightness, dark mode, contrast.
 
 It lives in the menu bar. The camera and MediaPipe turn each frame into blinks, distance, posture, rubs, yawns, sitting too close, and a dark room against a bright display — an eye score you watch live.
 
-Gemma 4 on Ollama checks one screenshot every 30 seconds. In deep work it enters Zen: measuring continues, nudges wait. When Zen ends, a recap shows what your eyes did while eyeOS stayed silent.
+A local AI model checks a screenshot ~every 30 seconds. If it notices you're doing deep work it enters Zen: measuring continues, nudges wait. When Zen ends, a recap shows what your eyes did while eyeOS stayed silent.
 
 Claude Sonnet 5.5 picks the smallest useful action: change the Mac, or ask you to rest. Cartesia Sonic speaks the rest — palming, a focus shift, deliberate blinks — and can read the page aloud.
 
-Every Claude action needs code-enforced approval. Feedback becomes memory. Reflection writes the next rules. The Log tracks what moved the eye score.
+Every Claude action passes a code-enforced approval check: each kind of action the first time, the bigger ones every time. Feedback becomes memory. Reflection writes the next rules. The Log tracks what moved the eye score.
 
-Camera frames never leave the Mac. Screenshots stay local, then wipe. Claude gets numbers, the app name, and your rules. No images, titles, page text.
+Camera frames never leave the Mac. Screenshots go only to the vision model (on your Mac unless you pick a hosted one), then wipe. Claude gets numbers, the app name, a short screen description and your rules. No images, window titles, page text. Calendar event titles only if you approve calendar access.
 
 See [SPEC.md](SPEC.md).
 
@@ -34,11 +34,11 @@ flowchart TB
         cond{{"<b>Conductor</b> · local VLM, every 30 s<br/>situation · focus · interruptibility<br/>→ Zen on/off · nudge now or wait"}}
         act["<b>Action layer</b><br/>macOS settings, overlays, voice"]
         mem[("<b>Memory</b><br/>learned + reflected rules")]
-        refl["<b>Reflection agent</b><br/>display off / next launch"]
     end
 
     subgraph cloud["Cloud (your Claude or Codex login) or any OpenAI-compatible server"]
         llm["<b>Reasoning agent</b><br/>picks the action and words it"]
+        refl["<b>Reflection agent</b><br/>display off / next launch"]
     end
 
     det -->|metrics| cond
@@ -54,25 +54,27 @@ flowchart TB
 | Part | Role | Runs | Code |
 |---|---|---|---|
 | **Detection** | Signal processing, not an LLM: MediaPipe face and hand landmarks → eye and posture metrics and events. Flags problems (low or frequent blinking, leaning in, rubbing…). | on-device, every frame | `metrics.py`, `triggers.py` |
-| **Conductor** (orchestrator) | Local vision model. Every 30 s it reads one screenshot plus the metrics and its previous check, and returns the activity, situation, focus and interruptibility. Turns Zen on and off, and holds nudges during meetings and deep work (rubbing and leaning in still go out). Falls back to rules without a vision model. | on-device: Ollama, or any OpenAI-compatible server | `screen_watch.py`, `zen.py` |
-| **Reasoning agent** | The cloud LLM, woken only when the conductor says it's a good moment. Picks the least disruptive action (or none) and writes the message. Every action passes a code-enforced approval check. | Claude Agent SDK, Codex CLI, or any OpenAI-compatible server | `agent.py`, `codex.py`, `openai_compat.py` |
-| **Action layer** | Carries out the choice: brightness, dark mode, contrast, text zoom, Focus, windows; overlays (edge glow, break and posture cards, exercises, questions); voice (read aloud, or a spoken summary made by the local model). | on-device | `tools/system.py`, `Overlays.swift`, `tts.py` |
+| **Conductor** (orchestrator) | Local vision model, so private information on your screen doesn't leave the computer. Every ~30 s it reads one screenshot plus the metrics and its previous check, and returns the activity, situation, focus and interruptibility. Automatically turns Zen on and off, and holds nudges during meetings and deep work (rubbing and leaning in still go out). Falls back to rules without a vision model. | on-device with Ollama or a local OpenAI-compatible server; a hosted one works too, but screenshots then leave the Mac | `screen_watch.py`, `zen.py` |
+| **Reasoning agent** | The cloud LLM, woken only when the conductor says it's a good moment. Picks the least disruptive action (or none) and writes the message. Every action passes a code-enforced approval check. Claude uses Sonnet 5.5 by default and drops to Haiku 5.5 when Sonnet is slow. | Claude Agent SDK, Codex CLI, or any OpenAI-compatible server | `agent.py`, `codex.py`, `openai_compat.py` |
+| **Action layer** | Carries out the choice: brightness, dark mode, contrast, text zoom, Focus, windows; overlays (edge glow, break and posture cards, exercises, questions); voice (read aloud, or a spoken summary made by the vision model). | on-device | `tools/system.py`, `Overlays.swift`, `tts.py` |
 | **Memory** | Rules sent with every run: learned from outcomes, declines and answers (what helps, what you dislike), plus what reflection writes. | on-device | `learning.py` |
 | **Reflection agent** | When the display turns off (or at the next launch, after a shutdown), reviews the unreflected stretch by hour and by situation, and writes a summary, 2–4 rules and one thing to try. | reasoning agent, numbers only | `reflection.py` |
 
 **Privacy.** Camera frames never leave the Mac. Screenshots are captured into memory, never written to disk, shown
 only to the vision model, and wiped after each check. If you point vision at an OpenAI-compatible server that isn't on this
-Mac, Settings warns that screenshots leave the Mac. The cloud model gets numbers, the app name, the conductor's
-short text and memory rules: no images, window titles or page text. Voice uses macOS `say` unless you add a Cartesia key.
+Mac, Settings warns that screenshots leave the Mac; spoken summaries use the same server, so page text goes there too.
+The cloud model gets numbers, the app name, the conductor's short text and memory rules: no images, window titles or
+page text. If you approve the calendar tool, it also sees the titles of your next few events. Voice uses macOS `say`
+unless you add a Cartesia key.
 
 ## Run
 
 ```sh
-cd sidecar && uv sync && mkdir models && ./scripts/fetch_models.sh   # once
+cd sidecar && uv sync && ./scripts/fetch_models.sh   # once
 cd ../app && ./scripts/build_app.sh && open build/eyeOS.app
 ```
 
-The app spawns the Python sidecar (`uv run … python -m eyeos`). The reasoning agent uses your own CLI login: Claude through the Claude Agent SDK (its bundled `claude`, or `ANTHROPIC_API_KEY` from Settings → Keys), or Codex through `codex exec` (pick in Settings → Agent). The screen agent needs [Ollama](https://ollama.com) with a vision model (`ollama pull gemma4`) and Screen Recording permission for eyeOS. Without them the agent just works without a screen description. The Cartesia key is optional: without it, voice uses macOS `say`.
+The app spawns the Python sidecar (`uv run … python -m eyeos`). The reasoning agent uses your own CLI login: Claude through the Claude Agent SDK (its bundled `claude`, or an Anthropic API key from Settings → Agent), or Codex through `codex exec` (pick in Settings → Agent). The screen agent needs [Ollama](https://ollama.com) with a vision model (`ollama pull gemma4`) and Screen Recording permission for eyeOS. Without them the agent works without a screen description, Zen uses simpler rules, and spoken summaries are unavailable. The Cartesia key is optional: without it, voice uses macOS `say`.
 
 **OpenAI-compatible servers (local LLMs).** Both the agent and the screen check can use any server that speaks the
 OpenAI Chat Completions API: LM Studio, Ollama's `/v1`, llama.cpp, MLX (`mlx_lm.server`), vLLM, OpenAI, OpenRouter, or
@@ -84,7 +86,7 @@ for the agent's input.
 
 No Xcode needed: the app is a SwiftPM package wrapped into a `.app` by `build_app.sh`.
 
-First launch opens a short setup: welcome (grants the camera), sit at arm's length (3 s), follow the dot (10 s). The 60 s blink baseline then runs in the background; the Live header shows its progress. Keys, other permissions and Focus Shortcuts are optional and live in Settings.
+First launch opens a short setup: welcome (grants the camera), sit at arm's length (3 s), follow the dot (10 s), blink 3 times (up to 8 s). The 60 s blink baseline then runs in the background; the Live header shows its progress. Keys, other permissions and Focus Shortcuts are optional and live in Settings.
 
 Each rebuild re-signs the app ad hoc, so macOS asks once for Keychain access to the saved keys. Click **Always Allow**; until you do, the app waits at launch with no window.
 
@@ -95,9 +97,9 @@ Each rebuild re-signs the app ad hoc, so macOS asks once for Keychain access to 
 - Settings → Camera → **Recalibrate**, or the "Not calibrated" pill in the Live header: calibration steps only.
 - As a true first run: `defaults delete dev.eyeos.app onboarded`, then relaunch. Add `tccutil reset Camera dev.eyeos.app` to see the camera prompt again.
 
-Check that **Start** stays disabled until "Face found" shows, each step shows a progress ring and moves on by itself, a full-screen dot visits the center and four corners in step 2, and after **Start using eyeOS** the Live header counts down "Learning your normal blink rate" and then shows an eye score. Cover the camera during a step to see the failure and **Try again**.
+Check that **Start** stays disabled until "Face found" shows, each step shows a progress ring and moves on by itself when it succeeds (a weak result offers **Continue anyway** or **Try again**), a full-screen dot visits the center and four corners in step 2, step 3 ticks off each of your 3 blinks, and after **Start using eyeOS** the Live header counts down "Learning your normal blink rate" and then shows an eye score. Cover the camera during a step to see the failure and **Try again**.
 
-**Without the UI.** Drive steps 1–3 against a second sidecar with a throwaway database. It needs camera access for your terminal, and stdin must stay open, because the sidecar exits on stdin EOF:
+**Without the UI.** Drive the same steps (distance, gaze, blink check, then the 60 s baseline) against a second sidecar with a throwaway database. It needs camera access for your terminal, and stdin must stay open, because the sidecar exits on stdin EOF:
 
 ```sh
 cd sidecar
@@ -108,14 +110,18 @@ pkill -f "eyeos --port 8799"
 
 ## Zen mode
 
-After `zen.enter_min` (default 10) minutes of sustained focus, eyeOS goes silent: no agent runs, overlays or sounds, and the menu bar shows a plain eye. Sustained focus means eyes on screen, active input, a work app in front and no real break. Metrics keep recording. Zen ends on a real break, being away, going idle, switching to a non-work app, or a call. A recap card then lists what happened while eyeOS stayed silent: blink-rate change, eye rubs, time too close to the screen, posture drift, squinting, and every alert it held back. The same recap appears on the Log page. Start or end it by hand from the Live header, the menu bar or Settings. See SPEC §9.11.
+After `zen.enter_min` (default 10) minutes of sustained focus, eyeOS goes silent: no agent runs, overlays or sounds, and the menu bar shows a plain eye. Sustained focus means your eyes are on the screen, there's no call and no real break, and the conductor saw deep focus (and no meeting) in at least 3 of its last 4 checks. Without a vision model it falls back to active input and a work app in front. Metrics keep recording.
+
+Automatic Zen ends on a real break, being away, a call or meeting, or three checks in a row without deep focus. Going idle ends it too, unless the conductor still sees deep focus (reading without typing). Without the conductor, switching to a non-work app also ends it. Zen you start by hand lasts until you end it or a call starts.
+
+If Zen lasted at least a minute (20 s in demo mode) and didn't end because you walked away, a recap card lists what happened while eyeOS stayed silent: blink-rate change, eye rubs, time too close to the screen, posture drift, squinting, and how many alerts it held back (with the top three kinds). The same recap appears on the Log page. Start or end Zen by hand from the Live header, the menu bar or Settings. See SPEC §9.11.
 
 ## Blink blur
 
 Stare at the screen for 8 s without blinking and it slowly goes soft. A full blink clears it at once; a half blink
 only clears half, which teaches full blinks. It's off during Zen, calls, video, quiet apps and exercises. Toggle it and
 set the strength in Settings → Camera. Demo mode starts it at 4 s. The agent can also turn it on, off, up or down
-(`set_blink_blur`, asks the first time). Its effect on blink rate is measured like any other action, so the agent
+(`set_blink_blur`, asks you each time unless you set it to auto in Settings → Advanced → Tools). Its effect on blink rate is measured like any other action, so the agent
 learns whether blur helps you. The sidecar computes the level (`blur.py`, sent as
 `blur` in `metrics`); the app draws a click-through frosted pane (`Overlays.swift`).
 
@@ -185,7 +191,7 @@ Without a key, everything still works using macOS `say`, on-device.
 | Where | What it says | Why it has to be voice |
 |---|---|---|
 | Eye gym (`agent.py`, `gym.py`) | Step instructions; "keep going, 20 seconds to go" reminders; live reactions to what the camera sees ("Four.", "That one was only half", "I can see you peeking", "Eyes only, keep your head still") | Your eyes are closed or following a dot |
-| `summarize_aloud` | A 4–6 sentence summary of the current page, written by the local model | Rest your eyes and still get the gist |
+| `summarize_aloud` | A 4–6 sentence summary of the current page, written by the vision model (on the Mac by default) | Rest your eyes and still get the gist |
 | `switch_to_audio` | The current Safari or Chrome tab, or the selected text, read aloud | Long reading with tired eyes |
 
 **Cartesia features used:**
@@ -200,8 +206,8 @@ Without a key, everything still works using macOS `say`, on-device.
 - Long text is split into chunks, and the next chunk is synthesized while the current one plays.
 - A reaction only plays in a gap, so it never cuts off an instruction.
 
-**Privacy.** Cartesia only receives text to be spoken: exercise scripts, fixed reaction phrases, summaries made on
-the Mac, and pages you explicitly ask to hear. It never receives camera frames or screenshots.
+**Privacy.** Cartesia only receives text to be spoken: exercise scripts, fixed reaction phrases, summaries made by
+your vision model, and pages you explicitly ask to hear. It never receives camera frames or screenshots.
 
 **Known limitations.**
 - Clips aren't streamed: each chunk is synthesized fully before it plays. Short lines are cached and play at once,

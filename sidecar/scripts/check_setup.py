@@ -1,4 +1,5 @@
-"""Drives the setup calibration (steps 1-3) against a running sidecar and prints each result.
+"""Drives the setup calibration like the app does (distance, gaze, blink check, then the 60 s baseline) against a
+running sidecar and prints each result.
 
 Usage: uv run python scripts/check_setup.py PORT TOKEN   (see README "Testing setup")
 """
@@ -24,7 +25,11 @@ async def main(port, token):
         await pump(lambda m: m["type"] == "metrics", 5)
         mt = last["metrics"]
         print("camera_ok", last["status"].get("camera_ok"), "face_present", mt.get("face_present"), "calibrated", mt.get("calibrated"))
-        for step, dur in ((1, 3), (2, 10), (3, 60)):
+        for step, dur in ((1, 3), (2, 10), (4, 8), (3, 60)):
+            if step == 4:
+                print("blink 3 times now, about a second apart")
+            if step == 3:  # the app ends the setup sheet's hold before starting the baseline
+                await ws.send(json.dumps({"type": "command", "name": "calibration_end"}))
             await ws.send(json.dumps({"type": "command", "name": "calibrate", "args": {"step": step}}))
             targets = []
             def done(m):
@@ -32,7 +37,8 @@ async def main(port, token):
                     targets.append(m["target"])
                 return m["type"] == "calibration" and m.get("step") == step and m["phase"] in ("done", "failed")
             m = await pump(done, dur + 20)
-            print(f"step {step}:", m and m["phase"], json.dumps(m and m.get("result")), "targets" if targets else "", targets or "")
+            print(f"step {step}:", m and m["phase"], json.dumps(m and m.get("result")), "targets" if targets else "", targets or "",
+                  f"blinks {m.get('blinks')}" if m and step == 4 else "", f"warnings {m['warnings']}" if m and m.get("warnings") else "")
             if not m or m["phase"] != "done":
                 return
         await pump(lambda m: m["type"] == "status", 5)

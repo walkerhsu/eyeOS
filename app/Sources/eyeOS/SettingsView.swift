@@ -80,7 +80,7 @@ struct SettingsView: View {
     var zenCard: some View {
         SettingsCard(title: "Zen mode", icon: "moon.stars.fill", color: .indigo,
                      subtitle: "During deep focus eyeOS keeps measuring but stays invisible: no agent, no popups, no sounds.") {
-            SettingRow("Detect deep focus automatically", detail: "Eyes on screen, working in the same app, no breaks") {
+            SettingRow("Detect deep focus automatically", detail: "Eyes on screen, deep work on screen, no breaks") {
                 Toggle("", isOn: bool("zen.enabled")).labelsHidden().toggleStyle(.switch)
             }
             SettingRow("Enter Zen after", detail: "Shorter = goes quiet sooner") {
