@@ -22,7 +22,7 @@ eyeOS is an AI eye-habit coach in your Mac's menu bar. Through your laptop camer
 We followed three design principles: **unobtrusive**, **adaptive**, and **transparent**.
 
 *Watches*
-- **Habit detection:** catches common habits that affect eye health, including staring without blinking, squinting, bad posture, and eye rubbing through your laptop camera.
+- **Habit detection:** catches habits that affect eye health through your laptop camera: staring without blinking, squinting, bad posture, and eye rubbing.
 - **Live eye score:** blink rate, half blinks, staring, drowsiness, distance, squinting, and time since your last break, rolled into one 0–100 score.
 
 *Nudges at the right moment*
@@ -47,7 +47,7 @@ We followed three design principles: **unobtrusive**, **adaptive**, and **transp
 
 ## How we built it
 **Mac app**
-- **SwiftUI:** Live, Log, and Settings views, a menu bar extra, overlays, and the exercise screen.
+- **SwiftUI:** Live, Log, Agent, and Settings views, a menu bar extra, overlays, and the exercise screen.
 - **Python sidecar:** connected over a token-authenticated WebSocket bound to localhost.
 
 **On-device**
@@ -63,18 +63,18 @@ We followed three design principles: **unobtrusive**, **adaptive**, and **transp
 - **macOS:** brightness and dark mode.
 - **Shortcuts:** contrast and display toggles, since direct `defaults` writes are blocked on current macOS.
 
-Source: https://github.com/walkerhsu/eyeOS
-
 ## Challenges we ran into
-- **Deciding what to build:** the longest stretch. A timer is a weekend project; a coach that can tell a meeting from a coding block is an architecture.
-- **Splitting the agents by what they can see:** detection and the conductor stay on the Mac because they see the camera and the screen. Claude stays in the cloud and only gets what it needs to choose an action. Designing that handoff, including a screen recording path for the local model and a hard stop before any image reaches Claude, was the core technical problem.
-- **Knowing when to stay quiet:** if eyeOS talks over a deadline, it's the timer we were trying to replace. The conductor has to be willing to do nothing, then explain in the Zen recap what it held back.
-- **Building an app we'd leave running:** a live eye score, a log of every agent decision, and settings that make the camera, screen recording, and keys understandable. The interface took as long as the models.
+- Deciding what to build took the longest, since a timer is a weekend project but a coach that can tell a meeting from a coding block is an architecture.
+- Splitting the agents by what they can see was the core technical problem: the camera and screen stay with the on-device models, and Claude gets only the numbers it needs, never an image.
+- Teaching eyeOS to stay quiet was hard, because if it talks over a deadline it becomes the timer we were trying to replace.
+- Making an app we'd actually leave running meant the interface (live eye score, decision log, and understandable settings) took as long as the models.
 
 ## Accomplishments that we're proud of
-- **The orchestration:** eyeOS measures, waits for a moment when you can be interrupted, then either changes the Mac or talks you through a rest. Every action is tied to the signal that triggered it.
-- **The memory:** preferences come from what you allow, what you decline, and what actually helps. The next session already knows the difference.
-- **The system actions:** blink rate, distance, posture, a rub, a yawn, a bright screen in a dark room: each can become a concrete change on the computer, and the outcome is checked so a useless action isn't repeated out of habit.
+- **Unobtrusive:** most nudges resolve themselves as you keep working: a blink clears the blur, sitting back clears the dimmed edges, and Zen holds everything during deep work, then recaps what it saw. In our recordings, the eye-rub cue caught every rub about 0.2 s after the fingers arrived, without firing on hair twirling or pushing up glasses.
+- **Adaptive:** every action is measured against what your eyes did in the next few minutes, so eyeOS learns which fixes help you, which ones you'd rather skip, and what tends to come before your habits. The next session starts from there.
+- **Transparent:** you can see everything eyeOS sees and decides: the camera tracking, live graphs of every metric, and each agent run with its reasoning, its actions, and whether they helped.
+- **Private orchestration:** a local model that sees your screen decides *when* to act, and Claude decides *what* to do without ever seeing an image of you or your screen.
+- **Camera-checked exercises:** the voice coach counts your blinks, catches you peeking during palming, and scores how well your eyes follow a moving dot.
 
 ## What we learned
 - **Private and cloud models can share one product** if each only sees what it needs. Gemma 4 sees the screen; Claude never does.
@@ -83,3 +83,5 @@ Source: https://github.com/walkerhsu/eyeOS
 ## What's next for eyeOS
 - **More screens:** the Mac is the first screen, not the only one. Next is syncing a session across devices and a phone version for when the laptop is closed, so these signals aren't trapped in one app.
 - **Clinical partners:** reviewing the eye score, blink rate, and session history with eye doctors and specialists, to take eyeOS from a coach for deadline week to something a clinician could stand behind.
+- **Gamified progress:** streaks and goals that make building healthy screen habits more rewarding.
+- **Talking back to the agent:** tell eyeOS why a nudge didn't work, in your own words or by voice, so it learns faster than from outcomes alone.
