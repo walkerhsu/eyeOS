@@ -17,6 +17,7 @@ from . import learning
 from . import openai_compat as OA
 from . import tools as T
 from .codex import Codex
+from .db import TRIGGER_UNITS
 from .gym import Gym
 from .metrics import verdict
 from .tools import system as S
@@ -332,7 +333,7 @@ class Agent:
         day0 = dt.datetime.combine(dt.date.today(), dt.time()).timestamp()
         bl = app.engine.cal
         return {
-            "triggers": [{"id": t["id"], "value": t["value"],
+            "triggers": [{"id": t["id"], "value": t["value"], "unit": TRIGGER_UNITS.get(t["id"]),
                           "fired_at": dt.datetime.fromtimestamp(t["fired_at"]).astimezone().isoformat(timespec="seconds")}
                          for t in triggers],
             "now": _now_ctx(),
