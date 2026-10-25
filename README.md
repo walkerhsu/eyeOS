@@ -98,7 +98,9 @@ After `zen.enter_min` (default 10) minutes of sustained focus, eyeOS goes silent
 
 Stare at the screen for 8 s without blinking and it slowly goes soft. A full blink clears it at once; a half blink
 only clears half, which teaches full blinks. It's off during Zen, calls, video, quiet apps and exercises. Toggle it and
-set the strength in Settings → Camera. Demo mode starts it at 4 s. The sidecar computes the level (`blur.py`, sent as
+set the strength in Settings → Camera. Demo mode starts it at 4 s. The agent can also turn it on, off, up or down
+(`set_blink_blur`, asks the first time). Its effect on blink rate is measured like any other action, so the agent
+learns whether blur helps you. The sidecar computes the level (`blur.py`, sent as
 `blur` in `metrics`); the app draws a click-through frosted pane (`Overlays.swift`).
 
 ## Eye gym
@@ -113,6 +115,50 @@ Focus shift isn't checked, because a webcam can't see where your eyes focus. Spo
 exercise starts (Cartesia, or `say`), so they play without delay and still work on slow Wi‑Fi. Each result
 ("8 full blinks · 2 half", "Tracking accuracy 78%") is logged and becomes the tool call's result, so the agent and the
 Log page can see it.
+
+## Voice (Cartesia)
+
+Eye rest means looking away from the screen or closing your eyes, so eyeOS can't count on you reading anything
+then. Voice keeps working: it's how eyeOS coaches you and reads to you while your eyes rest.
+
+**Setup.**
+1. Create an API key at [play.cartesia.ai](https://play.cartesia.ai).
+2. Paste it into Settings → Keys & voice and click **Save and restart sidecar**. The key is kept in the macOS
+   Keychain and passed to the sidecar as `CARTESIA_API_KEY`. It is never written to the repo.
+
+Without a key, everything still works using macOS `say`, on-device.
+
+**Where Cartesia is used** (`sidecar/eyeos/tts.py`):
+
+| Where | What it says | Why it has to be voice |
+|---|---|---|
+| Eye gym (`agent.py`, `gym.py`) | Step instructions; "keep going, 20 seconds to go" reminders; live reactions to what the camera sees ("Four.", "That one was only half", "I can see you peeking", "Eyes only, keep your head still") | Your eyes are closed or following a dot |
+| `summarize_aloud` | A 4–6 sentence summary of the current page, written by the local model | Rest your eyes and still get the gist |
+| `switch_to_audio` | The current Safari or Chrome tab, or the selected text, read aloud | Long reading with tired eyes |
+
+**Cartesia features used:**
+- Sonic-3 text-to-speech (`tts.bytes`, 24 kHz 16-bit WAV).
+- The voices API (`voices.list`), to pick a default voice.
+- `generation_config.speed`, controlled by the `audio.speed` setting.
+
+**Making it feel instant:**
+- Every clip is cached on disk, keyed by voice, speed and text.
+- When an exercise starts, all its possible reactions are synthesized in parallel, so a reaction plays as soon as
+  the camera sees something. Cached lines keep working on slow or dropped Wi‑Fi.
+- Long text is split into chunks, and the next chunk is synthesized while the current one plays.
+- A reaction only plays in a gap, so it never cuts off an instruction.
+
+**Privacy.** Cartesia only receives text to be spoken: exercise scripts, fixed reaction phrases, summaries made on
+the Mac, and pages you explicitly ask to hear. It never receives camera frames or screenshots.
+
+**Known limitations.**
+- Clips aren't streamed: each chunk is synthesized fully before it plays. Short lines are cached and play at once,
+  but reading a long page aloud starts after the first chunk (up to about 600 characters) is ready.
+- With a key set but no network, lines that aren't cached fail silently. The exercise overlay still runs; only the
+  voice is missing.
+- There's no voice picker in the UI yet. It uses the voice in the `audio.voice_id` setting, or the first voice the
+  API lists.
+- Voice only goes one way: you can't talk back to eyeOS yet.
 
 ## Sidecar only
 

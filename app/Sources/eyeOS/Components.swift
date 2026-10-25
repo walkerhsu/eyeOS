@@ -289,7 +289,7 @@ func toolPhrase(_ name: String) -> String {
         "set_reduce_motion": "Reduced motion", "set_focus_mode": "Changed Focus mode", "play_ambient_cue": "Played a soft cue",
         "switch_to_audio": "Read aloud for you", "stop_audio": "Stopped audio", "ask_user": "Asked you a question",
         "suggest_seeing_eye_doctor": "Suggested an eye check-up", "enlarge_active_window": "Enlarged the window",
-        "set_display_brightness": "Adjusted screen brightness", "set_text_zoom": "Changed text size",
+        "set_display_brightness": "Adjusted screen brightness", "set_blink_blur": "Changed blink blur", "set_text_zoom": "Changed text size",
         "suggest_posture_reset": "Suggested a posture reset", "summarize_aloud": "Summarized the page aloud",
         "describe_screen": "Looked at the screen (on-device)", "set_cursor_size": "Changed pointer size",
     ][name] ?? humanize(name)

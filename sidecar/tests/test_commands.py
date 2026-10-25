@@ -99,3 +99,15 @@ def test_gaze_trace_runs_and_its_result_is_logged(tmp_path):
     res = [e for e in app.db.q("SELECT details FROM events WHERE kind='system'") if "exercise_result" in e["details"]]
     assert len(res) == 1 and '"type": "gaze_trace"' in res[0]["details"]
     assert "gaze_trace exercise (30 s)" in app.db.q("SELECT result FROM tool_calls")[0]["result"]
+
+
+def test_agent_can_tune_blink_blur(tmp_path):
+    app = make(tmp_path)
+
+    async def go(args):
+        app.loop = asyncio.get_running_loop()
+        return await app.agent.execute("set_blink_blur", args, None)
+    ok, r = asyncio.run(go({"enabled": True, "strength": 0.4}))
+    assert ok and r == "blink blur on at 40%" and app.settings["blur.enabled"] is True and app.settings["blur.strength"] == 0.4
+    ok, r = asyncio.run(go({"enabled": False}))
+    assert ok and r == "blink blur off" and app.settings["blur.enabled"] is False and app.settings["blur.strength"] == 0.4

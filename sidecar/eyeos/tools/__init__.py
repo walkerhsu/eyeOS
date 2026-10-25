@@ -64,11 +64,12 @@ CATALOG = {
         "model looks at the screen; you only get its text description, never pixels.",
         _obj(), "read", None, False, "py", None),
     "ask_user": (
-        "Ask the user a short question in a small floating panel with up to 4 short options. A 'Not now' button is "
-        "always shown, so don't include one. Times out after 60 s (returns null). Use when unsure whether something "
-        "disruptive is welcome.",
+        "Ask the user a short question in a small floating panel with up to 4 options. Options are button labels: "
+        "1-3 words each (e.g. 'Start', 'In 5 min', 'Skip today'); put any detail in the question. A 'Not now' button "
+        "is always shown, so don't include one. Times out after 60 s (returns null). Use when unsure whether "
+        "something disruptive is welcome.",
         _obj({"question": {"type": "string", "maxLength": 200},
-              "options": {"type": "array", "items": {"type": "string", "maxLength": 40}, "maxItems": 4},
+              "options": {"type": "array", "items": {"type": "string", "maxLength": 20}, "maxItems": 4},
               "allow_free_text": B}, ["question", "options"]),
         "read", None, True, "swift", None),
     "save_user_preference": (
@@ -105,6 +106,14 @@ CATALOG = {
         "squinting at a dim screen in a bright room. Code limits each change to 0.3.",
         _obj({"level": {"type": "number", "minimum": 0.05, "maximum": 1.0}}, ["level"]),
         "action", "ask", False, "py", "squint_delta"),
+    "set_blink_blur": (
+        "Turn blink blur on or off and set its strength (0.2-1). While on, the screen slowly softens after a stare "
+        "without blinking and a blink clears it: an automatic blink cue that never interrupts. The current state is in "
+        "system_state.blink_blur; its outcome is measured on blink_rate, so recent_actions show whether it helps this "
+        "user. Turn it on or up for a persistent low blink rate or long stares that gentler cues didn't fix; turn it "
+        "down or off when it isn't raising blink_rate or the user finds it distracting.",
+        _obj({"enabled": B, "strength": {"type": "number", "minimum": 0.2, "maximum": 1.0}}, ["enabled"]),
+        "action", "ask", False, "py", "blink_rate"),
     "set_text_zoom": (
         "Make text bigger or smaller in the front app (Cmd +/-/0: browsers, editors, Mail, Notes). Low disruption. For "
         "small text with squinting or leaning in.",
@@ -168,4 +177,7 @@ def validate(name, args):
             return f"{k} too long"
         if "maxItems" in p and len(v) > p["maxItems"]:
             return f"{k} has too many items"
+        item = p.get("items", {})
+        if "maxLength" in item and any(not isinstance(x, str) or len(x) > item["maxLength"] for x in v):
+            return f"each {k} item must be a string of at most {item['maxLength']} characters"
     return None

@@ -708,11 +708,22 @@ struct AskView: View {
     var body: some View {
         Card {
             ExpandableText(text: question)
-            HStack(spacing: 6) {
-                // the agent often adds its own "Not now"; we always show one, so skip it
-                ForEach(options.filter { !Self.isNotNow($0) }.prefix(4), id: \.self) { o in Button(o) { answer(o, text) }.lineLimit(1) }
-                Spacer(minLength: 0)
-                Button("Not now") { answer("Not now", nil) }.buttonStyle(.borderless).foregroundStyle(.secondary)
+            // the agent often adds its own "Not now"; we always show one, so skip it
+            let choices = Array(options.filter { !Self.isNotNow($0) }.prefix(4))
+            let notNow = Button("Not now") { answer("Not now", nil) }.buttonStyle(.borderless).foregroundStyle(.secondary)
+            // one row when the labels fit; otherwise one full-width button per line so nothing gets cut off
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                    ForEach(choices, id: \.self) { o in Button(o) { answer(o, text) }.fixedSize() }
+                    Spacer(minLength: 0)
+                    notNow.fixedSize()
+                }
+                VStack(spacing: 4) {
+                    ForEach(choices, id: \.self) { o in
+                        Button { answer(o, text) } label: { Text(o).lineLimit(1).frame(maxWidth: .infinity) }
+                    }
+                    HStack { Spacer(); notNow }
+                }
             }
             .controlSize(.small)
             if freeText {

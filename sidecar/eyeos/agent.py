@@ -336,7 +336,9 @@ class Agent:
             "active_app": {k: active.get(k) for k in ("name", "bundle_id", "category")},
             "system_state": {"dark_mode": snap.get("dark_mode"), "focus_on": self.state["focus_on"],
                              "audio_playing": app.speaker.busy(), "increase_contrast": self.state["increase_contrast"],
-                             "display_brightness": await asyncio.to_thread(S.get_brightness)},
+                             "display_brightness": await asyncio.to_thread(S.get_brightness),
+                             "blink_blur": {"enabled": app.settings["blur.enabled"], "strength": app.settings["blur.strength"],
+                                            "now": snap.get("blur")}},
             "screen_activity": app.screen.context(),
             "typing": app.typing(),
             "preferences": [{"id": p["id"], "rule": p["rule"], "app": p["app"]} for p in db.preferences()],
@@ -535,6 +537,13 @@ class Agent:
                 await app.notice(f"Brightness {round(cur * 100)}% → {round(level * 100)}%")
                 app.refresh_screen_soon()
             return ok, r
+        if name == "set_blink_blur":
+            await app.set_setting("blur.enabled", a["enabled"])
+            if a.get("strength") is not None:
+                await app.set_setting("blur.strength", round(a["strength"], 2))
+            state = f"on at {round(app.settings['blur.strength'] * 100)}%" if a["enabled"] else "off"
+            await app.notice(f"Blink blur {state}")
+            return True, f"blink blur {state}"
         if name == "set_text_zoom":
             ok, r = await S.arun(S.set_text_zoom, a["direction"], a.get("steps", 1))
             if ok:

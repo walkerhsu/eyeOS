@@ -116,6 +116,6 @@ let toolIcons: [String: String] = [
     "suggest_look_out_window": "window.vertical.open", "start_guided_eye_exercise": "figure.mind.and.body",
     "play_ambient_cue": "bell", "switch_to_audio": "speaker.wave.2.fill", "stop_audio": "speaker.slash",
     "ask_user": "questionmark.bubble", "suggest_seeing_eye_doctor": "stethoscope", "enlarge_active_window": "macwindow",
-    "set_display_brightness": "sun.max", "set_text_zoom": "textformat.size", "suggest_posture_reset": "figure.stand",
+    "set_display_brightness": "sun.max", "set_blink_blur": "drop.circle", "set_text_zoom": "textformat.size", "suggest_posture_reset": "figure.stand",
     "summarize_aloud": "text.bubble", "describe_screen": "lock.display", "set_cursor_size": "cursorarrow.rays",
 ]
