@@ -20,7 +20,7 @@ from . import demo
 from . import habits as Hb
 from . import tools as T
 from . import openai_compat as OA
-from .agent import EXERCISES, Agent
+from .agent import DEMO_POSTURE_TRIGGERS, EXERCISES, Agent
 from .blur import StareBlur
 from .db import DB, TRIGGERS, validate_setting
 from .metrics import CHECK, Engine, blink_check, blink_thresholds, classify_dip
@@ -323,6 +323,10 @@ class App:
                 if self.zen.active or self.gym:
                     self.triggers.pending.clear()  # Zen or mid-exercise: keep recording, never wake the agent
                     continue
+                if s["agent.enabled"] and s["demo.enabled"] and set(self.triggers.pending) & DEMO_POSTURE_TRIGGERS:
+                    # demo: leaning in shows the posture card at once, even while the agent is busy
+                    lean = [self.triggers.pending.pop(k) for k in DEMO_POSTURE_TRIGGERS & set(self.triggers.pending)]
+                    asyncio.create_task(self.agent.demo_posture(lean))
                 c = self.screen.fresh(90)
                 interruptible = not c or c.get("interruptibility") is None or c["interruptibility"] >= 0.35
                 if not interruptible and self.triggers.pending and set(self.triggers.pending) != self._held:

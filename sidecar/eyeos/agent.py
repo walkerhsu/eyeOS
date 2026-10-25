@@ -90,6 +90,9 @@ KEEP_GOING = {"palming": "Keep your eyes closed and breathe slowly.", "focus_shi
               "gaze_trace": "Stay with the dot."}
 DEMO_PALMING_S = 40  # demo eye-rub response only; the model still chooses in a real session
 DEMO_PALM_TEXT = "You're rubbing your eyes. Let's warm your palms and rest them."
+DEMO_POSTURE_TRIGGERS = {"too_close", "posture_drift"}  # leaning in: demo shows the posture card at once
+DEMO_POSTURE_TEXT = "You're leaning in toward the screen. Sit back to arm's length and let your shoulders drop."
+DEMO_POSTURE_GAP_S = 30  # one card per lean, not one per trigger cooldown
 
 DONE_TEXT = {"palming": "The exercise is done. Open your eyes slowly and blink a few times.",
              "focus_shift": "The exercise is done. Your eyes can relax now.",
@@ -133,6 +136,7 @@ class Agent:
         self.app = app
         self.db = app.db
         self.busy = False
+        self.last_demo_posture = -1e9
         self.latencies = []
         self.pending_suggestions = []  # {call_id, tool, ts}
         self.state = {"focus_on": False, "increase_contrast": False}
@@ -643,6 +647,34 @@ class Agent:
         if err:
             msg["error"] = err
         await app.send(msg)
+
+    async def demo_posture(self, triggers):
+        """Demo only: leaning in shows the posture card right away instead of waiting on the model.
+        Real sessions still go through run()."""
+        app, db, t0 = self.app, self.db, time.time()
+        if t0 - self.last_demo_posture < DEMO_POSTURE_GAP_S:
+            return
+        self.last_demo_posture = t0
+        run_id = db.x("INSERT INTO agent_runs (ts_start, status, triggers) VALUES (?, 'started', ?)",
+                      (t0, json.dumps(triggers)))
+        for tr in triggers:
+            if tr.get("event_id"):
+                db.x("UPDATE events SET run_id=? WHERE id=?", (run_id, tr["event_id"]))
+        self.run_text[run_id] = DEMO_POSTURE_TEXT
+        await app.send({"type": "agent_run", "run_id": run_id, "ts": t0, "phase": "started", "triggers": triggers})
+        await app.send({"type": "agent_text", "run_id": run_id, "text": DEMO_POSTURE_TEXT})
+        args = {"message": DEMO_POSTURE_TEXT}
+        asyncio.create_task(app.ui_request("posture_card", {"message": DEMO_POSTURE_TEXT, "duration_s": 12}, 90))
+        cid = db.x("""INSERT INTO tool_calls (run_id, ts, name, args, status, tier, approval, result)
+                      VALUES (?, ?, 'suggest_posture_reset', ?, 'done', 'auto', 'demo', ?)""",
+                   (run_id, time.time(), json.dumps(args), json.dumps("posture card shown")))
+        await app.send({"type": "tool_call", "run_id": run_id, "call_id": cid, "name": "suggest_posture_reset",
+                        "args": args, "status": "done", "result": "posture card shown", "tier": "auto",
+                        "executor": "swift"})
+        asyncio.create_task(self.evaluate_outcome(cid, "suggest_posture_reset", "distance_cm", time.time()))
+        db.x("UPDATE agent_runs SET ts_end=?, status='finished', text=? WHERE id=?", (time.time(), DEMO_POSTURE_TEXT, run_id))
+        await app.send({"type": "agent_run", "run_id": run_id, "ts": time.time(), "phase": "finished",
+                        "triggers": triggers, "latency_s": round(time.time() - t0, 2)})
 
     async def user_exercise(self, kind, duration_s):
         """An exercise the user started from the menu bar or HUD. No approval (the click is consent), but it is

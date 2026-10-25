@@ -17,7 +17,7 @@ SWAP_TEXT = {"rub": "Itchy eyes? Swap the rub for 20 s of palming: same relief, 
 OFFER_GAP_S, DEMO_OFFER_GAP_S, MAX_DECLINES = 300, 45, 3
 
 LEAN = {"close": 0.8, "clear": 0.88,   # x calibrated distance: closer = leaning in; farther = sat back (hysteresis)
-        "start_s": 30, "full_s": 45, "demo_start_s": 8, "demo_full_s": 15, "hold_s": 60}
+        "start_s": 30, "full_s": 45, "demo_start_s": 3, "demo_full_s": 8, "hold_s": 60}
 
 ZOOM_OPTION = "Bigger"
 ZOOM = {"squint_s": 5, "gap_s": 600, "auto_after": 2, "apps": ("coding", "reading", "writing")}  # where Cmd+ zooms text
