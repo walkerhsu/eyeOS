@@ -132,6 +132,42 @@ exercise starts (Cartesia, or `say`), so they play without delay and still work 
 ("8 full blinks · 2 half", "Tracking accuracy 78%") is logged and becomes the tool call's result, so the agent and the
 Log page can see it.
 
+## Habit coach
+
+Eye habits are mostly unconscious, so telling someone "don't" rarely sticks. The coach follows habit reversal:
+notice the habit as it starts, swap it for something harmless, fix what drives it, and show progress (`habits.py`).
+
+| Habit | What eyeOS sees | What it does |
+|---|---|---|
+| Rubbing your eyes | Fingertips at an eye while your eyes close (`metrics.py`) | A soft "tink" about 0.2 s in, with an amber glow and a short line that stay up until you open your eyes. Then an offer to swap the rub for 20 s of palming (same relief, no pressure, checked by the camera) |
+| Pulling or tugging at lashes | The same touch, but the fingertip stays put instead of sweeping across the eye | The same cue and swap |
+| Leaning in | You've been closer than 80% of your calibrated distance for 30 s | The screen edges slowly darken; sitting back clears them |
+| Squinting at small text | Squinting for 5 s in an editor, browser or notes app | "Make it bigger?" One tap presses ⌘+. After two yeses in an app, it does it by itself |
+
+**Only the eyes.** People touch their faces about 20 times an hour, mostly harmlessly. Cueing all of that would
+just get muted, so the coach only cues reaches to the eyes, where rubbing and pulling do harm.
+
+**No false alarms from everyday touching.** From a single camera, fingers twirling hair in front of your eye look
+just like a rub. What gives a rub away is the eye: rubbing or pulling at your lashes shuts it, while hair play, a
+chin or cheek in your hand, or pushing up your glasses leave both eyes open. In recordings, the touched eye's
+openness was about 0.3 for rubs and lash pulls and about 1.0 for everything else. So a touch only counts while
+your eyes are closing, and a fingertip nearer the nose bridge than the eye (glasses) never counts. On those
+recordings this caught every rub and lash pull, about 0.2–0.3 s after the fingers arrived, with no cue for hair,
+chin or normal work. While a hand is near your eyes, hands are tracked on every frame instead of every third, so
+the cue isn't late. To check or tune it on your own recordings, see `sidecar/scripts/habit_report.py`.
+
+We tried cueing *before* contact, by predicting where the hand was heading. It gave almost no head start (rubs
+arrive fast) and it caused every false alarm, so the coach waits for a touch with the eyes closing.
+
+**What comes before the habit.** Each rub saves what was going on: time since a break, blink rate, the longest
+stare, how long the session has run, and the time of day. Learning compares that with your screen time overall,
+and turns a clear pattern into a memory rule the agent reads, e.g. *"Most of this user's eye rubs (7 of 9) come
+after 45+ min without a real break."* The agent then acts before the urge, and leaves the instant responses to the
+coach.
+
+The coach is silent in Zen, calls, meetings and exercises, but it still counts. The Today tile shows rubs against
+your 7-day average and how many you swapped.
+
 ## Voice (Cartesia)
 
 Eye rest means looking away from the screen or closing your eyes, so eyeOS can't count on you reading anything

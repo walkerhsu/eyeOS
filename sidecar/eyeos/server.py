@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlparse
 import cv2
 
 from . import demo
+from . import habits as Hb
 from . import tools as T
 from . import openai_compat as OA
 from .agent import EXERCISES, Agent
@@ -31,7 +32,7 @@ from .tts import Speaker
 from .zen import Zen, eye_score, recap_stats
 
 VERSION = "0.1.0"
-EVENT_KIND = {"rub": "rub", "yawn": "yawn", "break": "break", "eyes_closed": "blink_anomaly", "blink": "blink_anomaly"}
+EVENT_KIND = {"rub": "rub", "lash_pull": "lash_pull", "touch": "touch", "yawn": "yawn", "break": "break", "eyes_closed": "blink_anomaly", "blink": "blink_anomaly"}
 BLINK_CHECK = 4      # the prompted blinks, run after gaze and before the baseline (numbered 4 so logged steps keep their meaning)
 CAL_SECONDS = {1: 3, 2: 10, 3: 60, BLINK_CHECK: 8}  # the blink check ends early once the 3 blinks are in
 GAZE_DOTS = ["center", "top_left", "top_right", "bottom_right", "bottom_left"]
@@ -53,6 +54,9 @@ class App:
         self.triggers = Triggers()
         self.zen = Zen()
         self.blur = StareBlur()
+        self.coach = Hb.HabitCoach()
+        self.lens = Hb.LeanLens()
+        self.zoom = Hb.ZoomCoach()
         self.gym = None            # the camera-checked exercise running now (agent._exercise)
         self.today = {}
         self.speaker = Speaker(lambda: self.settings)
@@ -128,7 +132,9 @@ class App:
                         cam.release()
                         time.sleep(1)
                         continue
-                    vision.hands_every = 1 if self.settings.get("demo.enabled") else 3
+                    # every frame while a hand is near the eyes (catch a touch in time), else every 3rd
+                    hot = time.time() < self.engine.hands_hot_until
+                    vision.hands_every = 1 if self.settings.get("demo.enabled") or hot else 3
                     f = vision.process(bgr, ts)
                     if rec:
                         rec.write(json.dumps({k: f.get(k) for k in ("ts", "w", "h", "face", "blend", "transform", "hands", "luma", "pose")}) + "\n")
@@ -163,7 +169,7 @@ class App:
         if self.calibrating:
             return
         if self.gym and self.gym.kind == "palming":  # palms over the eyes look like rubbing; they're not
-            events = [e for e in events if e["kind"] != "rub"]
+            events = [e for e in events if e["kind"] not in ("rub", "lash_pull", "touch")]
         if self.gym:
             say = self.gym.feed_events(events, time.time())
             if say:
@@ -173,6 +179,11 @@ class App:
             k = e["kind"]
             if k in ("blink", "incomplete"):
                 self.blur.on_dip(k)
+            elif k == "touch":
+                self._touch()
+            elif k in ("rub", "lash_pull"):
+                e = {**e, "context": self._habit_context()}
+                self._habit(k)
             details = {kk: v for kk, v in e.items() if kk not in ("ts", "kind")}
             if k in ("blink", "incomplete"):
                 dip = "long_blink" if k == "blink" and e["long"] else k
@@ -182,6 +193,86 @@ class App:
                 if dip != "long_blink":
                     continue
             self.log_event(EVENT_KIND.get(k, "system"), None, e.get("duration"), {"event": k, **details}, e["ts"])
+
+    # ---------- habits ----------
+
+    def _habits_allowed(self):
+        """Habit cues and offers stay quiet in Zen, calls, quiet apps, meetings, exercises and recalibration.
+        The habits are still counted."""
+        c = self.screen.fresh(90) or {}
+        return (not self.settings["tracking.paused"] and not self.zen.active and not self.gym and not self.calibrating
+                and not self.agent.quiet() and c.get("situation") != "meeting")
+
+    def _touch(self):
+        s = self.settings
+        if s["habits.rub_coach"] and s["habits.touch_cue"] != "off" and self.coach.on_touch(self._habits_allowed()):
+            self._send_soon({"type": "habit_cue", "style": s["habits.touch_cue"]})
+
+    def _habit(self, kind):
+        s = self.settings
+        if s["habits.rub_coach"] and self.coach.on_habit(time.time(), self._habits_allowed(), s["demo.enabled"],
+                                                          time.strftime("%Y-%m-%d")):
+            asyncio.ensure_future(self._offer_swap(kind))
+        asyncio.ensure_future(self.agent.relearn())
+
+    async def _offer_swap(self, kind):
+        """Swap the habit for palming: the same hands-to-eyes motion without the pressure, checked by the camera."""
+        res = await self.ui_request("ask_user", {"question": Hb.SWAP_TEXT[kind], "options": [Hb.SWAP_OPTION],
+                                                 "allow_free_text": False}, 60)
+        choice = (res or {}).get("choice")
+        self.coach.answered(choice, time.strftime("%Y-%m-%d"))
+        accepted = choice == Hb.SWAP_OPTION
+        self.log_event("system", None, None, {"event": "habit_swap", "habit": kind, "accepted": accepted})
+        if accepted:
+            await self.agent.user_exercise("palming", 20)
+
+    def _habit_context(self):
+        """What was going on when a habit happened, so learning can find what tends to come before it."""
+        s, c = self.snapshot, self.screen.fresh(300) or {}
+        ctx = {k: s.get(k) for k in ("blink_rate", "since_real_break_s", "longest_stare_s", "session_s", "squinting",
+                                     "room_luma", "screen_luma", "app_category")}
+        return {**ctx, "hour": time.localtime().tm_hour, "situation": c.get("situation")}
+
+    def _habits_tick(self, snap):
+        """Leaning in and squinting, every tick. Returns the lens strength for the Swift vignette."""
+        s, now = self.settings, time.time()
+        allowed = self._habits_allowed() and bool(snap.get("calibrated") and snap.get("face_present"))
+        c = self.screen.fresh(300) or {}
+        small = c.get("text_size") == "small" or bool(snap.get("squinting"))
+        start = Hb.LEAN["demo_start_s"] if s["demo.enabled"] else Hb.LEAN["start_s"]
+        lean_small = small and self.lens.close_for(now) >= start
+        if s["habits.squint_zoom"] and self.zoom.want(now, self.active.get("bundle_id"), self.active.get("category"),
+                                                       snap.get("squint_s"), lean_small, allowed):
+            if self.lens.close_for(now):
+                self.lens.hold(now)  # bigger text fixes leaning in at small text better than "sit back"
+            asyncio.ensure_future(self._offer_zoom("distance_cm" if lean_small else "squint_delta"))
+        return self.lens.update(now, snap.get("distance_cm"), self.engine.cal.get("distance_cm"), snap.get("distance_stale"),
+                                s["habits.lean_lens"] and allowed and not snap.get("talking"), s["demo.enabled"])
+
+    async def _offer_zoom(self, metric):
+        """Bigger text instead of squinting or leaning in. Asks until the user has said yes twice in this app."""
+        bid, name = self.active.get("bundle_id"), self.active.get("name") or "this app"
+        yes = self.db.q("SELECT COUNT(*) n FROM events WHERE kind = 'system' AND ts > ? "
+                        "AND json_extract(details, '$.event') = 'zoom_offer' AND json_extract(details, '$.bundle_id') = ? "
+                        "AND json_extract(details, '$.accepted') = 1", (time.time() - 14 * 86400, bid))[0]["n"]
+        auto = yes >= Hb.ZOOM["auto_after"]
+        if not auto:
+            res = await self.ui_request("ask_user", {"question": f"Squinting at small text? Make it bigger in {name}.",
+                                                     "options": [Hb.ZOOM_OPTION], "allow_free_text": False}, 60)
+            if (res or {}).get("choice") != Hb.ZOOM_OPTION or self.active.get("bundle_id") != bid:  # no, or app changed
+                self.log_event("system", None, None, {"event": "zoom_offer", "bundle_id": bid, "app": name, "accepted": False})
+                return
+        args = {"direction": "in", "steps": 1}
+        cid = self.db.x("INSERT INTO tool_calls (run_id, ts, name, args, status, tier, approval) "
+                        "VALUES (NULL, ?, 'set_text_zoom', ?, 'executing', 'user', ?)",
+                        (time.time(), json.dumps(args), "learned" if auto else "user_started"))
+        ok, r = await S.arun(S.set_text_zoom, "in", 1)
+        self.db.x("UPDATE tool_calls SET status = ?, result = ? WHERE id = ?", ("done" if ok else "failed", json.dumps(r), cid))
+        self.log_event("system", None, None, {"event": "zoom_offer", "bundle_id": bid, "app": name, "accepted": True,
+                                              "auto": auto, "ok": ok})
+        if ok:
+            await self.notice(f"Made text bigger in {name} (⌘− to undo)" if auto else f"Text bigger in {name} (⌘0 resets)")
+            asyncio.create_task(self.agent.evaluate_outcome(cid, "set_text_zoom", metric, time.time()))
 
     def log_event(self, kind, trigger_id, value, details, ts=None):
         ts = ts or time.time()
@@ -207,6 +298,7 @@ class App:
                 snap["eye_score"] = eye_score(snap, self.engine.cal)
                 snap["zen"] = self.zen.active
                 snap["blur"] = self._blur(snap)
+                snap["lean"] = self._habits_tick(snap)
                 self.snapshot = snap
                 if self.gym:
                     now = time.time()
@@ -239,7 +331,8 @@ class App:
                                    {"event": "deferred", "triggers": sorted(self._held),
                                     "reason": f"{(c.get('situation') or 'busy').replace('_', ' ')}: {c.get('reason') or ''}".strip(": ")})
                 run = self.triggers.take(time.time(), self.agent.busy, s, interruptible)
-                if run and s["agent.enabled"] and s["demo.enabled"] and any(t["id"] == "eye_rub" for t in run):
+                if (run and s["agent.enabled"] and s["demo.enabled"] and not s["habits.rub_coach"]
+                        and any(t["id"] == "eye_rub" for t in run)):  # with the habit coach on, it offers palming
                     asyncio.create_task(self.agent.demo_palming(run))  # demo: always the voiced palming exercise
                 elif run and s["agent.enabled"] and self.agent.available():
                     asyncio.create_task(self.agent.run(run))
@@ -460,11 +553,22 @@ class App:
         actions = [n for n in T.CATALOG if T.CATALOG[n][2] == "action"]
         nudges = self.db.q(f"SELECT COUNT(*) n FROM tool_calls WHERE ts >= ? AND status='done' AND seeded=0 "
                            f"AND name IN ({','.join('?' * len(actions))})", (d0, *actions))[0]["n"]
+        week = self.db.q("SELECT COUNT(DISTINCT date(ts, 'unixepoch', 'localtime')) d, "
+                         "(SELECT COUNT(*) FROM events WHERE kind = 'rub' AND ts >= ? AND ts < ? AND seeded = 0) r "
+                         "FROM metrics_1hz WHERE ts >= ? AND ts < ? AND seeded = 0", (d0 - 7 * 86400, d0) * 2)[0]
+        accepted = lambda e: self.db.q("SELECT COUNT(*) n FROM events WHERE kind = 'system' AND ts >= ? AND seeded = 0 "
+                                       "AND json_extract(details, '$.event') = ? AND json_extract(details, '$.accepted') = 1",
+                                       (d0, e))[0]["n"]
+        lean_s = self.db.q("SELECT COUNT(*) n FROM metrics_1hz WHERE ts >= ? AND seeded = 0 "
+                           "AND json_extract(data, '$.lean') > 0", (d0,))[0]["n"]
         avg = self.db.q("SELECT AVG(json_extract(data, '$.blink_rate')) b, AVG(json_extract(data, '$.eye_score')) e "
                         "FROM metrics_1hz WHERE ts >= ? AND seeded=0", (d0,))[0]
         cur = self.zen.state(time.time())["duration_s"]
         return {"screen_time_s": self.snapshot.get("screen_time_today_s") or 0, "breaks": ev.get("break", 0),
                 "rubs": ev.get("rub", 0), "yawns": ev.get("yawn", 0), "nudges": nudges,
+                "rubs_avg_7d": round(week["r"] / week["d"], 1) if week["d"] else None,
+                "lash_pulls": ev.get("lash_pull", 0), "touches": ev.get("touch", 0),
+                "habit_swaps": accepted("habit_swap"), "zooms": accepted("zoom_offer"), "lean_s": lean_s,
                 "zen_s": round(zen["s"] + cur), "longest_zen_s": round(max(zen["m"], cur)),
                 "avg_blink_rate": round(avg["b"], 1) if avg["b"] is not None else None,
                 "avg_eye_score": round(avg["e"]) if avg["e"] is not None else None}
@@ -823,6 +927,7 @@ class App:
         elif name == "seed_demo":
             n = demo.seed(self.db)
             self.log_event("system", None, n, {"event": "seed_demo"})
+            asyncio.create_task(self.agent.relearn())  # seeded habits teach their triggers in demo mode
         elif name == "wipe_demo":
             demo.wipe(self.db)
             self.log_event("system", None, None, {"event": "wipe_demo"})

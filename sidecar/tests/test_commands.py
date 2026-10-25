@@ -111,3 +111,52 @@ def test_agent_can_tune_blink_blur(tmp_path):
     assert ok and r == "blink blur on at 40%" and app.settings["blur.enabled"] is True and app.settings["blur.strength"] == 0.4
     ok, r = asyncio.run(go({"enabled": False}))
     assert ok and r == "blink blur off" and app.settings["blur.enabled"] is False and app.settings["blur.strength"] == 0.4
+
+
+def test_a_rub_offers_palming_and_accepting_starts_it(tmp_path):
+    app = make(tmp_path)
+    quiet_exercises(app)
+    answers = iter([{"choice": "Palm 20 s"}])
+
+    async def ui_request(kind, payload, timeout):
+        app.ui.append((kind, payload))
+        return next(answers) if kind == "ask_user" else {"completed": True}
+    app.ui_request = ui_request
+
+    async def go():
+        app.loop = asyncio.get_running_loop()
+        app.on_events([{"kind": "rub", "ts": 1.0}])
+        await asyncio.sleep(0.1)
+    asyncio.run(go())
+    kinds = [k for k, _ in app.ui]
+    assert kinds[:2] == ["ask_user", "exercise"] and app.ui[0][1]["question"].startswith("Itchy eyes?")
+    assert app.ui[1][1]["type"] == "palming" and app.ui[1][1]["duration_s"] == 20
+    rub = app.db.q("SELECT details FROM events WHERE kind='rub'")[0]
+    assert '"context"' in rub["details"]
+    swaps = [e for e in app.db.q("SELECT details FROM events WHERE kind='system'") if "habit_swap" in e["details"]]
+    assert len(swaps) == 1 and '"accepted": true' in swaps[0]["details"]
+
+
+def test_habits_stay_silent_in_zen_but_are_counted(tmp_path):
+    app = make(tmp_path)
+    app.zen.set_manual(True, 0)
+
+    async def go():
+        app.loop = asyncio.get_running_loop()
+        app.on_events([{"kind": "touch", "ts": 1.0}, {"kind": "rub", "ts": 1.2}])
+        await asyncio.sleep(0.05)
+    asyncio.run(go())
+    assert app.ui == [] and not any(m.get("type") == "habit_cue" for m in app.sent)
+    assert app.db.q("SELECT COUNT(*) n FROM events WHERE kind='rub'")[0]["n"] == 1
+
+
+def test_a_touch_sends_the_cue(tmp_path):
+    app = make(tmp_path)
+
+    async def go():
+        app.loop = asyncio.get_running_loop()
+        app.on_events([{"kind": "touch", "ts": 1.0}])
+        await asyncio.sleep(0.05)
+    asyncio.run(go())
+    assert [m["style"] for m in app.sent if m.get("type") == "habit_cue"] == ["glow+sound"]
+    assert app.db.q("SELECT COUNT(*) n FROM events WHERE kind='touch'")[0]["n"] == 1

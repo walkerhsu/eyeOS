@@ -12,6 +12,17 @@ R_EAR = (33, 160, 158, 133, 153, 144)
 L_EAR = (362, 385, 387, 263, 373, 380)
 FINGERTIPS = (4, 8, 12, 16, 20)
 IRIS_MM = 11.7
+NOSE_BRIDGE = 168
+
+# Hands at the eyes. Distances are in IOD (outer eye corner to outer eye corner, ~9 cm on an adult). A touch counts
+# only while the eyes are closing: rubbing and pulling at the lashes shut them, while twirling hair, a chin in hand or
+# pushing up glasses leave them open (recordings: touched-eye openness ~0.3 vs ~1.0).
+TOUCH = {"r": 0.35,          # a fingertip this close to an eye centre (and nearer the eye than the nose bridge)
+         "closed_o": 0.6,    # ...while the eyes are this shut
+         "hold_s": 0.15,     # ...for this long: a touch, cued at once (rubs last ~1 s)
+         "refractory_s": 10,
+         "hot_r": 1.0, "hot_s": 1.5,  # a hand this near an eye: check hands every frame for a while (vision.py)
+         "lash_spread": 0.08}  # IOD: a lash pull stays put at the eye (~0.05); rubbing sweeps across it (~0.15)
 
 DEFAULT_ADV = {"dip_start_o": 0.75, "dip_end_o": 0.85,
                "complete_o": 0.35,        # quick natural blinks bottom out at 0.2-0.4 at 30 fps; only slow ones reach 0.2
@@ -244,6 +255,11 @@ class Engine:
         self.rub_near = deque()      # (ts, dt) of near-hand hand frames, 1.5 s
         self.rub_last = -1e9
         self.rubbing = False
+        self.hand_eye_r = None       # nearest fingertip to an eye centre (IOD), on hand frames
+        self.touch_since = None      # fingertips at an eye with the eyes closing, since
+        self.touch_last = -1e9
+        self.touch_pts = deque(maxlen=30)  # that fingertip relative to the eye (IOD) during the current touch
+        self.hands_hot_until = 0.0   # a hand was near the eyes: check hands every frame until then (vision.py)
         self.demo = False            # demo rubs count sooner and can repeat after the 10 s cooldown
         self.yawn_start = None
         self.screen_luma = None
@@ -328,8 +344,11 @@ class Engine:
             sq = (blend.get("eyeSquintLeft", 0) + blend.get("eyeSquintRight", 0)) / 2
             br = (blend.get("browDownLeft", 0) + blend.get("browDownRight", 0)) / 2
             score = sq + 0.5 * br
-            if self.dip.state == "OPEN":
-                self.open_samples.append((t, score, o))
+            # a real squint narrows the eyes enough to look like a slow dip: count it once it outlasts any blink
+            narrowed = self.dip.state != "OPEN" and t - self.dip.start > 0.4 and o > self.adv["complete_o"]
+            if self.dip.state == "OPEN" or narrowed:
+                look_down = (blend.get("eyeLookDownLeft", 0) + blend.get("eyeLookDownRight", 0)) / 2
+                self.open_samples.append((t, score, o, look_down))
             sample.update(ear=e, o=o, gx=gx, gy=gy, squint_score=score, state=self.dip.state)
 
             # talking: the jaw moves rhythmically while speaking (blendshape, else mouth aspect ratio)
@@ -369,28 +388,46 @@ class Engine:
             self.last.update(o=o, ear=e, gx=gx, gy=gy, yaw=yaw, pitch=pitch, roll=roll)
             self._posture_sample(t, pitch, roll, face[1][1])
 
-        # rubbing (§4.9): hand frames only; face dropout during near doesn't reset.
-        # Demo only: a shorter near-window, and hand-landmark dropouts (the palm covers the eye) keep counting
-        # for a moment so a real rub still emits. Real detection below is unchanged when self.demo is false.
+        # hands at the eyes (§4.9): hand frames only; face dropout during near doesn't reset. A touch counts only
+        # while the eyes are closing (TOUCH); a face hidden behind the hand counts as closing.
+        # Demo only: a shorter near-window, the eyes needn't close, and hand-landmark dropouts (the palm covers the eye)
+        # keep counting for a moment, so a demo rub always emits.
         hands = f.get("hands")
         if hands is not None and self.last_face is not None:
             lf = self.last_face
             iod = dist(lf[33], lf[263], w, h)
             centers = (eye_center(lf, R_EAR), eye_center(lf, L_EAR))
-            md = min((dist(hand[i], c, w, h) for hand in hands for i in FINGERTIPS for c in centers), default=1e9)
-            near = md < 0.35 * iod
+            bridge = lf[NOSE_BRIDGE]
+            # the nearest fingertip at an eye, not at the bridge (glasses)
+            md, tip, eye = min(((dist(hand[i], c, w, h), hand[i], c) for hand in hands for i in FINGERTIPS for c in centers
+                                if dist(hand[i], c, w, h) <= dist(hand[i], bridge, w, h)),
+                               key=lambda x: x[0], default=(1e9, None, None))
+            self.hand_eye_r = md / iod if tip is not None else None
+            if md < TOUCH["hot_r"] * iod:
+                self.hands_hot_until = t + TOUCH["hot_s"]
+            near = md < TOUCH["r"] * iod
             if self.demo and not hands and self.rub_near and t - self.rub_near[-1][0] <= 0.8:
                 near = True  # fingertips were just on the eye; the hand landmarker lost them
-            self.rubbing = near
+            closing = self.demo or not present or (self.last.get("o") or 1.0) < TOUCH["closed_o"]
+            self.rubbing = near and closing
+            rel = ((tip[0] - eye[0]) * w / iod, (tip[1] - eye[1]) * h / iod) if tip is not None else None
+            events += self._touch(t, self.rubbing, rel)
             prev = self.rub_near[-1][0] if self.rub_near else None
-            if near:
+            if self.rubbing:
                 self.rub_near.append((t, min(t - prev, 0.2) if prev else 0.1))
             _trim(self.rub_near, t - 1.5)
             need, refractory = (0.35, 10) if self.demo else (0.7, 30)
             if sum(d for _, d in self.rub_near) >= need and t - self.rub_last >= refractory:
                 self.rub_last = t
                 self.rub_near.clear()
-                events.append({"kind": "rub", "ts": t})
+                # pulling at lashes stays put with the eye in view; rubbing sweeps across it; a palm over the face (or a
+                # demo) is a rub
+                pts = self.touch_pts
+                spread = math.hypot(statistics.pstdev(x for x, _ in pts), statistics.pstdev(y for _, y in pts)) \
+                    if len(pts) >= 3 else 1.0
+                events.append({"kind": "lash_pull" if spread < TOUCH["lash_spread"] and present and not self.demo
+                               else "rub", "ts": t})
+                pts.clear()
 
         # looking away / real breaks (§4.8)
         away = not present or not on_screen
@@ -431,10 +468,13 @@ class Engine:
     def _squinting(self):
         if not self.open_samples:
             return False
-        delta = statistics.fmean(s for _, s, _ in self.open_samples) - self.cal["squint_score"]
-        ratio = statistics.fmean(o for _, _, o in self.open_samples)
+        delta = statistics.fmean(s for _, s, _, _ in self.open_samples) - self.cal["squint_score"]
+        ratio = statistics.fmean(o for _, _, o, _ in self.open_samples)
+        down = statistics.fmean(d for _, _, _, d in self.open_samples)
         self.last["squint_delta"], self.last["open_ratio"] = delta, ratio
-        return delta > 0.15 or ratio < 0.80
+        # the squint blendshape is the sign; narrowed eyes alone also come from looking down (reading the bottom of
+        # the screen), so they count only while looking ahead
+        return delta > 0.15 or (ratio < 0.80 and down < 0.30)
 
     def _blink_stats(self):
         """(blink_rate, incomplete_pct, quiet_min) over the last 60 s, counting only time you weren't talking.
@@ -561,6 +601,22 @@ class Engine:
                           "lean": _r(lean - rlean if both(lean, rlean) else None, 2),
                           "distance_ratio": _r(d / rd if d and rd else None, 2)}}
 
+    def _touch(self, t, touching, rel):
+        """A `touch` event (cue it now) once fingertips have stayed at an eye with the eyes closing; meanwhile, where
+        the fingertip is relative to the eye, which tells rubbing from pulling at the lashes."""
+        if not touching:
+            self.touch_since = None
+            if not self.rub_near:  # the episode is over
+                self.touch_pts.clear()
+            return []
+        if rel is not None:
+            self.touch_pts.append(rel)
+        self.touch_since = self.touch_since or t
+        if t - self.touch_since >= TOUCH["hold_s"] and t - self.touch_last >= TOUCH["refractory_s"]:
+            self.touch_last = t
+            return [{"kind": "touch", "ts": t}]
+        return []
+
     def snapshot(self, now=None):
         t = now or self.last_ts or time.time()
         present_frames = sum(1 for x in self.frames if x[1])
@@ -599,7 +655,7 @@ class Engine:
             "yaw_deg": _r(L.get("yaw"), 1), "pitch_deg": _r(L.get("pitch"), 1), "roll_deg": _r(L.get("roll"), 1),
             "gx": _r(L.get("gx")), "gy": _r(L.get("gy")),
             "gaze_on_screen": bool(self.frames and self.frames[-1][3]),
-            "rubbing": self.rubbing,
+            "rubbing": self.rubbing, "hand_eye_r": _r(self.hand_eye_r),
             "yawn_count_5m": len(self.yawns),
             "room_luma": _r(room, 0),
             "screen_luma": self.screen_luma, "dark_mode": self.dark_mode,

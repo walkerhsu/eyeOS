@@ -266,6 +266,8 @@ struct EventCard: View {
         case "trigger": humanize(e.str("trigger_id") ?? "trigger")
         case "break": "Real break"
         case "rub": "Eye rub"
+        case "touch": "Hands at your eyes"
+        case "lash_pull": "Hands at your lashes"
         case "yawn": "Yawn"
         case "blink_anomaly": event == "eyes_closed" ? "Eyes closed" : "Long blink"
         case "zen": event == "zen_start" ? "Zen started" : "Zen ended"
@@ -274,6 +276,8 @@ struct EventCard: View {
             case "situation": "Now: " + humanize(e.obj("details")?.str("situation") ?? "")
             case "deferred": "Held a nudge"
             case "reflection": "Reflection"
+            case "habit_swap": e.obj("details")?.bool("accepted") == true ? "Swapped for palming" : "Offered palming"
+            case "zoom_offer": e.obj("details")?.bool("accepted") == true ? "Made text bigger" : "Offered bigger text"
             case _ where isCalibration: "Calibration · " + humanize(calibrationStep)
             default: humanize(event.isEmpty ? "system" : event)
             }
@@ -287,6 +291,8 @@ struct EventCard: View {
                 + (d.bool("demo") ? " · demo" : "")
         case "break": return value.map { "Looked away for \(duration($0))" } ?? "Looked away from the screen"
         case "rub": return "Fingertips stayed near your eyes"
+        case "touch": return "Fingers at a closing eye; a soft cue to notice it"
+        case "lash_pull": return "Thumb and finger pinched at your lash line"
         case "yawn": return "A sign you may be getting tired"
         case "blink_anomaly": return value.map { "Lasted \(fmt($0, 1)) s" } ?? ""
         case "zen":
@@ -313,6 +319,9 @@ struct EventCard: View {
             case "situation": return [d.str("activity"), d.str("reason")].compactMap { $0 }.joined(separator: " · ")
             case "deferred": return d.str("reason") ?? ""
             case "reflection": return d.str("summary") ?? ""
+            case "habit_swap": return d.bool("accepted") ? "Same relief, no pressure on the eyes" : "Not this time"
+            case "zoom_offer":
+                return (d.str("app") ?? "") + (d.bool("auto") ? " · automatic after your earlier yeses" : "")
             default: return "System"
             }
         }
@@ -340,18 +349,21 @@ struct EventCard: View {
     var icon: String {
         switch e.str("kind") {
         case "trigger": "bolt.fill"; case "break": "figure.walk"; case "rub": "hand.raised.fill"; case "yawn": "mouth"
+        case "touch": "hand.point.up.left.fill"; case "lash_pull": "hand.pinch.fill"
         case "blink_anomaly": "eye.slash"; case "zen": "moon.stars.fill"
         default:
             isErrorEvent(e) ? "exclamationmark.triangle.fill" :
             ["situation": "lock.display", "deferred": "hourglass", "reflection": "sparkles", "calibration": "scope",
              "calibration_weak": "exclamationmark.circle", "calibration_failed": "exclamationmark.triangle",
-             "calibration_interrupted": "pause.circle"][event] ?? "gearshape"
+             "calibration_interrupted": "pause.circle", "habit_swap": "hands.and.sparkles.fill",
+             "zoom_offer": "textformat.size"][event] ?? "gearshape"
         }
     }
 
     var color: Color {
         switch e.str("kind") {
-        case "trigger": .yellow; case "break": .green; case "zen": .indigo; case "rub", "blink_anomaly", "yawn": .orange
+        case "trigger": .yellow; case "break": .green; case "zen": .indigo
+        case "rub", "touch", "lash_pull", "blink_anomaly", "yawn": .orange
         default: isErrorEvent(e) ? .pink : ["situation": Color.mint, "deferred": .indigo, "reflection": .purple, "calibration": .teal,
                                             "calibration_weak": .yellow, "calibration_failed": .orange][event] ?? .gray
         }

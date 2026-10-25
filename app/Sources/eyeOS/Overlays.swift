@@ -154,20 +154,61 @@ final class Overlays {
         guard level > 0.001 || blurLevel > 0.001 else { return }
         let p = blurPanel ?? makeBlurPanel()
         blurLevel = level
-        if level > 0.001 { p.orderFrontRegardless() }
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = duration
-            p.animator().alphaValue = level
-        }, completionHandler: { [weak self] in
-            if (self?.blurLevel ?? 0) <= 0.001 { p.orderOut(nil) }
-        })
+        fade(p, to: level, duration: duration) { [weak self] in (self?.blurLevel ?? 0) <= 0.001 }
     }
 
-    /// A click-through, screen-sized frosted pane: the system blurs whatever is behind it; its alpha sets how soft.
+    /// A frosted pane: the system blurs whatever is behind it; its alpha sets how soft.
     private func makeBlurPanel() -> NSPanel {
         let frame = NSScreen.main?.frame ?? .init(x: 0, y: 0, width: 1440, height: 900)
+        let fx = NSVisualEffectView(frame: NSRect(origin: .zero, size: frame.size))
+        fx.material = .fullScreenUI
+        fx.blendingMode = .behindWindow
+        fx.state = .active
+        let hint = NSHostingView(rootView: BlinkHint())
+        hint.frame = fx.bounds
+        hint.autoresizingMask = [.width, .height]
+        fx.addSubview(hint)
+        blurPanel = makePane(fx)
+        return blurPanel!
+    }
+
+    // MARK: - habits
+
+    private var leanPanel: NSPanel?
+    private let lean = PaneLevel()
+
+    /// Leaning in (sidecar `lean`, 0–1 at 5 Hz): the screen edges darken until you sit back. The pane itself is
+    /// fully shown while active so its hint is readable at once; only the darkening follows the level.
+    func updateLean(_ level: Double) {
+        guard level > 0.001 || lean.value > 0.001 else { return }
+        let p = leanPanel ?? makePane(NSHostingView(rootView: LeanVignette(level: lean)))
+        leanPanel = p
+        withAnimation(.easeInOut(duration: 0.4)) { lean.value = level }
+        fade(p, to: level > 0.001 ? 1 : 0, duration: level > 0.001 ? 0.25 : 0.4) { [weak self] in (self?.lean.value ?? 0) <= 0.001 }
+    }
+
+    /// Fingers at a closing eye: a soft tink at once (the eyes are shut), and a warm glow with a short line that stays
+    /// up ~3 s so it's there when they open.
+    func habitCue(_ style: String) {
+        present("habit_cue", AnyView(HabitCue()), frame: NSScreen.main?.frame, level: .screenSaver, clickThrough: true)
+        if style.contains("sound") { NSSound(named: "Tink")?.play() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.4) { [weak self] in self?.dismiss("habit_cue") }
+    }
+
+    /// Fades a pane to `alpha` and orders it out once it's still invisible at the end.
+    private func fade(_ p: NSPanel, to alpha: Double, duration: Double, hidden: @escaping () -> Bool) {
+        if alpha > 0.001 { p.orderFrontRegardless() }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = duration
+            p.animator().alphaValue = alpha
+        }, completionHandler: { if hidden() { p.orderOut(nil) } })
+    }
+
+    /// A click-through, screen-sized pane just under exercises and calibration, starting invisible.
+    private func makePane(_ content: NSView) -> NSPanel {
+        let frame = NSScreen.main?.frame ?? .init(x: 0, y: 0, width: 1440, height: 900)
         let p = OverlayPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        p.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue - 1)  // exercises and calibration stay on top
+        p.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue - 1)
         p.isOpaque = false
         p.backgroundColor = .clear
         p.hasShadow = false
@@ -175,17 +216,9 @@ final class Overlays {
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         p.isReleasedWhenClosed = false
         p.alphaValue = 0
-        let fx = NSVisualEffectView(frame: NSRect(origin: .zero, size: frame.size))
-        fx.material = .fullScreenUI
-        fx.blendingMode = .behindWindow
-        fx.state = .active
-        fx.autoresizingMask = [.width, .height]
-        let hint = NSHostingView(rootView: BlinkHint())
-        hint.frame = fx.bounds
-        hint.autoresizingMask = [.width, .height]
-        fx.addSubview(hint)
-        p.contentView = fx
-        blurPanel = p
+        content.frame = NSRect(origin: .zero, size: frame.size)
+        content.autoresizingMask = [.width, .height]
+        p.contentView = content
         return p
     }
 
@@ -684,6 +717,62 @@ private struct GazeDot: View {
                 ctx.fill(Path(ellipseIn: CGRect(x: c.x - 34, y: c.y - 34, width: 68, height: 68)), with: .color(.teal.opacity(0.18)))
                 ctx.fill(Path(ellipseIn: CGRect(x: c.x - 16, y: c.y - 16, width: 32, height: 32)), with: .color(.teal))
             }
+        }
+    }
+}
+
+/// How strongly a pane's effect shows (0–1), separate from the pane's own alpha.
+@MainActor
+final class PaneLevel: ObservableObject {
+    @Published var value = 0.0
+}
+
+/// The hint on a habit pane, styled like "Blink to clear".
+struct PaneHint: View {
+    let text: String
+    let icon: String
+    var body: some View {
+        Label(text, systemImage: icon)
+            .font(.title3.weight(.medium)).foregroundStyle(.primary.opacity(0.85))
+            .padding(.horizontal, 18).padding(.vertical, 10)
+            .background(.regularMaterial, in: Capsule())
+    }
+}
+
+/// Leaning in: the edges darken like tunnel vision and the hint says why; sitting back clears it.
+struct LeanVignette: View {
+    @ObservedObject var level: PaneLevel
+    var body: some View {
+        GeometryReader { g in
+            ZStack {
+                RadialGradient(gradient: Gradient(stops: [.init(color: .clear, location: 0), .init(color: .clear, location: 0.45),
+                                                          .init(color: .black.opacity(0.9), location: 1)]),
+                               center: .center, startRadius: 0, endRadius: max(g.size.width, g.size.height) * 0.62)
+                    .opacity(level.value)
+                PaneHint(text: "You're leaning in. Sit back to clear", icon: "arrow.uturn.backward")
+                    .opacity(min(1, level.value * 4))  // readable from the first moment, not only at full strength
+            }
+        }
+        .ignoresSafeArea()
+    }
+}
+
+/// Fingers at the eyes: a warm edge glow and a short line, shown at once.
+struct HabitCue: View {
+    @StateVar private var shown = false
+    var body: some View {
+        ZStack {
+            Rectangle().strokeBorder(LinearGradient(colors: [.orange, .yellow.opacity(0.5)], startPoint: .top, endPoint: .bottom),
+                                     lineWidth: 36)
+                .blur(radius: 24)
+            PaneHint(text: "Hands at your eyes? Try palming instead", icon: "hand.raised.fill")
+        }
+        .ignoresSafeArea()
+        .opacity(shown ? 1 : 0)
+        .task {
+            withAnimation(.easeOut(duration: 0.12)) { shown = true }
+            try? await Task.sleep(for: .seconds(2.8))
+            withAnimation(.easeIn(duration: 0.45)) { shown = false }
         }
     }
 }

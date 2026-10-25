@@ -257,3 +257,17 @@ def test_fixture_session():
     assert count("rub") == 1
     assert count("yawn") == 2
     assert count("break") == 1
+
+
+def test_a_sustained_squint_is_seen_even_though_it_narrows_the_eyes():
+    eng = M.Engine()
+    _, t = _feed(eng, 0.0, 3, lambda s: 1.0)
+    _, t = _feed(eng, t, 12, lambda s: 0.55)  # narrowed, never shut
+    snap = eng.snapshot(t)
+    assert snap["squinting"] and snap["squint_s"] > 3
+
+
+def test_normal_blinking_is_not_squinting():
+    eng = M.Engine()
+    _, t = _feed(eng, 0.0, 20, lambda s: 0.1 if (s % 4) > 3.8 else 1.0)
+    assert not eng.snapshot(t)["squinting"]

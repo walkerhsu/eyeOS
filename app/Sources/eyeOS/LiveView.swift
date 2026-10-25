@@ -254,6 +254,12 @@ struct TodayStrip: View {
     var bare = false
     var compact = false
 
+    /// "3 · avg 8": today's rubs against the last week's daily average, once there is one.
+    func rubsValue(_ t: J) -> String {
+        let n = t.int("rubs") ?? 0
+        return t.num("rubs_avg_7d").map { "\(n) · avg \(fmt($0, 0))" } ?? "\(n)"
+    }
+
     var body: some View {
         let t = store.today
         let items: [(String, String, String, Color, Explainer)] = [
@@ -262,7 +268,8 @@ struct TodayStrip: View {
             ("moon.stars.fill", duration(t.num("zen_s")), "In Zen", .indigo, Explain.zenTime),
             ("eye.fill", fmt(t.num("avg_blink_rate"), 1), "Avg blinks/min", .teal, Explain.avgBlinks),
             ("sparkles", "\(t.int("nudges") ?? 0)", "Nudges", .purple, Explain.nudges),
-            ("hand.raised.fill", "\(t.int("rubs") ?? 0)", "Eye rubs", .orange, Explain.rubs),
+            ("hand.raised.fill", rubsValue(t), (t.int("habit_swaps") ?? 0) > 0 ? "Eye rubs · \(t.int("habit_swaps")!) swapped" : "Eye rubs",
+             (t.num("rubs_avg_7d")).map { Double(t.int("rubs") ?? 0) < $0 ? Color.mint : .orange } ?? .orange, Explain.rubs),
         ]
         let content = VStack(alignment: .leading, spacing: compact ? 10 : 12) {
             if compact {

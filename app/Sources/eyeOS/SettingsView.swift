@@ -29,6 +29,7 @@ struct SettingsView: View {
                 Text("Settings").font(.system(size: 28, weight: .bold))
                 cameraCard
                 zenCard
+                habitsCard
                 agentCard
                 privacyCard
                 permissionsCard
@@ -104,6 +105,32 @@ struct SettingsView: View {
             store.set("agent.provider", "openai")
             if let p = EndpointPreset.all.first(where: { $0.id == id }) { store.set("agent.openai_base_url", p.url) }
         })
+    }
+
+    var habitsCard: some View {
+        SettingsCard(title: "Habits", icon: "hand.raised.fill", color: .orange,
+                     subtitle: "Gentle fixes for eye habits you don't notice. Quiet in Zen, calls and meetings; still counted.") {
+            SettingRow("Eye rubbing and lash pulling", detail: "A soft cue when your fingers reach a closing eye, then an offer to palm instead") {
+                Toggle("", isOn: bool("habits.rub_coach")).labelsHidden().toggleStyle(.switch)
+            }
+            if store.setting("habits.rub_coach") {
+                SettingRow("Cue", detail: "Your eyes are closed when it fires, so the sound is what you notice first") {
+                    Picker("", selection: Binding(get: { store.settings.str("habits.touch_cue") ?? "glow+sound" },
+                                                  set: { store.set("habits.touch_cue", $0) })) {
+                        Text("Glow + sound").tag("glow+sound")
+                        Text("Glow").tag("glow")
+                        Text("Off").tag("off")
+                    }
+                    .pickerStyle(.segmented).labelsHidden().frame(width: 240)
+                }
+            }
+            SettingRow("Leaning in", detail: "After 30 s closer than your usual distance the screen edges darken; sitting back clears them") {
+                Toggle("", isOn: bool("habits.lean_lens")).labelsHidden().toggleStyle(.switch)
+            }
+            SettingRow("Squinting at small text", detail: "Offers bigger text; after two yeses in an app it just does it") {
+                Toggle("", isOn: bool("habits.squint_zoom")).labelsHidden().toggleStyle(.switch)
+            }
+        }
     }
 
     var agentCard: some View {

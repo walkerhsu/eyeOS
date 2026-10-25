@@ -100,6 +100,8 @@ final class Store: ObservableObject {
             metrics = m
             record(m)
             overlays.updateBlur(m.num("blur") ?? 0)
+            overlays.updateLean(m.num("lean") ?? 0)
+        case "habit_cue": overlays.habitCue(m.str("style") ?? "glow")
         case "exercise_progress": exercise.p = m
         case "landmarks":
             feed.landmarks = m

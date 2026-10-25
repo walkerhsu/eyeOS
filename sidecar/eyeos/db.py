@@ -99,6 +99,10 @@ SETTINGS = {
     "blur.start_s": (8, _num(2, 60)),               # seconds without a blink before it starts
     "blur.full_s": (20, _num(3, 120)),              # ...and when it reaches full strength
     "blur.strength": (0.8, _num(0.1, 1)),
+    "habits.rub_coach": (True, _bool),              # cue a touch at the eyes; offer palming for a rub or lash pull
+    "habits.touch_cue": ("glow+sound", lambda v: v in ("glow+sound", "glow", "off")),
+    "habits.lean_lens": (True, _bool),              # darken the screen edges while leaning in; clears on sitting back
+    "habits.squint_zoom": (True, _bool),            # offer bigger text when squinting; automatic after two yeses per app
     "demo.enabled": (False, _bool),
     "memory.suppressed": ([], lambda v: isinstance(v, list) and all(_str(x) for x in v)),  # learned keys the user deleted
     "memory.reset_at": (0, _num(0)),  # last "Reset memory": learning and reflection ignore evidence before it

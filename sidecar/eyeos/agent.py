@@ -51,6 +51,11 @@ Rules:
   the session) are fatigue signs: say gently that they may be getting tired and suggest a real break.
 - preferences include rules learned from this user's history (what helped, what they declined); follow them.
   When the user states a lasting preference (an ask_user answer or note), save it with save_user_preference.
+- The habit coach already answers eye_rub (it offers to swap the rub for palming), leaning in (it darkens the
+  screen edges until the user sits back) and squinting (it offers bigger text). Don't repeat those; work on the cause
+  instead: blink cues or blink blur for dryness, a real break for fatigue, brightness for a dark room. Preferences
+  starting "Most of this user's eye rubs..." say what tends to come before a habit: act before it, e.g. offer a break
+  as the user nears their usual no-break stretch.
 - screen_activity is an on-device description of the screen (you never see pixels). Use it to pick actions: e.g. small
   text + leaning in or squinting -> set_text_zoom; long reading -> offer summarize_aloud or switch_to_audio; a much
   brighter screen than the room -> set_display_brightness down in small steps."""
@@ -141,7 +146,8 @@ class Agent:
         try:
             s = self.app.settings
             new = learning.apply(self.db, learning.derive(self.db, suppressed=s.get("memory.suppressed", []),
-                                                          reset_at=s.get("memory.reset_at", 0)))
+                                                          reset_at=s.get("memory.reset_at", 0),
+                                                          include_seeded=bool(s.get("demo.enabled"))))
         except Exception:  # noqa: BLE001 - learning must never break a run
             traceback.print_exc()
             return
@@ -350,7 +356,12 @@ class Agent:
                                      if v[2] == "action" or n in T.FIRST_USE_READS},
             "today": {"screen_time_min": round((snap.get("screen_time_today_s") or 0) / 60),
                       "breaks": db.q("SELECT COUNT(*) n FROM events WHERE kind='break' AND ts>=?", (day0,))[0]["n"],
-                      "interventions": db.q("SELECT COUNT(*) n FROM tool_calls WHERE status='done' AND ts>=?", (day0,))[0]["n"]},
+                      "interventions": db.q("SELECT COUNT(*) n FROM tool_calls WHERE status='done' AND ts>=?", (day0,))[0]["n"],
+                      "eye_rubs": db.q("SELECT COUNT(*) n FROM events WHERE kind='rub' AND ts>=?", (day0,))[0]["n"],
+                      "lash_pulls": db.q("SELECT COUNT(*) n FROM events WHERE kind='lash_pull' AND ts>=?", (day0,))[0]["n"],
+                      "habit_swaps": db.q("SELECT COUNT(*) n FROM events WHERE kind='system' AND ts>=? AND "
+                                          "json_extract(details, '$.event')='habit_swap' AND json_extract(details, '$.accepted')=1",
+                                          (day0,))[0]["n"]},
             "pending_suggestions": [{"tool": p["tool"], "seconds_ago": round(time.time() - p["ts"])}
                                     for p in self.pending_suggestions],
             "caveats": CAVEATS,

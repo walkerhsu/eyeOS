@@ -43,8 +43,12 @@ def seed(db, days=7, rng=None):
             db.x("INSERT INTO events (ts, kind, value, details, seeded) VALUES (?, 'break', 25, ?, 1)",
                  (start + h * 4500 + 3700, json.dumps({"event": "break"})))
         for i in range(2 + round(5 * k)):            # >= 5 rubs/day late in the week
+            # most come after a long stretch without a break, so the habit coach has a trigger to learn
+            ctx = {"since_real_break_s": round(rng.uniform(2800, 4800) if rng.random() < 0.8 else rng.uniform(300, 1800)),
+                   "blink_rate": round(max(3, rng.gauss(base_br * 0.8, 1.5)), 1), "longest_stare_s": round(rng.uniform(8, 20), 1),
+                   "session_s": round(rng.uniform(1800, 5000)), "hour": rng.choice([10, 11, 14, 15, 16]), "app_category": "coding"}
             db.x("INSERT INTO events (ts, kind, details, seeded) VALUES (?, 'rub', ?, 1)",
-                 (start + rng.uniform(0, 18000), json.dumps({"event": "rub"})))
+                 (start + rng.uniform(0, 18000), json.dumps({"event": "rub", "context": ctx})))
         for i in range(4):
             ts = start + 1800 + i * 4000
             tool, metric, args = TOOLS[i % len(TOOLS)]
