@@ -2,19 +2,23 @@
 
 ![eyeOS](eyeOS-title.png)
 
-eyeOS is a...
+eyeOS is an AI eye-habit coach in your Mac's menu bar. It fixes the habits that strain your eyes without breaking your focus.
 
-eyeOS for those constantly on screens, not by choice, but because their work demands it:  locked-in students pulling all nighters, engineers, IT, accountants, desk job workers—all chasing deadlines.
+It's for people on screens not by choice, but because their work demands it: students pulling all-nighters, engineers, IT, accountants, and anyone at a desk all day, all chasing deadlines. It follows three design principles: **unobtrusive**, **adaptive**, and **transparent**.
 
 The name is literal. An OS schedules work and manages resources. eyeOS schedules rest, and manages brightness, dark mode, contrast.
 
-It lives in the menu bar. The camera and MediaPipe turn each frame into blinks, distance, posture, rubs, yawns, sitting too close, and a dark room against a bright display — an eye score you watch live.
+The camera and MediaPipe turn each frame into blinks, distance, posture, rubs, yawns, sitting too close, and a dark room against a bright display — an eye score you watch live.
+
+Fixes happen in the moment and clear as soon as the habit does: stare and the screen softens until you blink, lean in and the edges dim until you sit back, squint and eyeOS offers bigger text, reach to rub your eyes and it offers palming instead.
 
 A local AI model checks a screenshot ~every 30 seconds. If it notices you're doing deep work it enters Zen: measuring continues, nudges wait. When Zen ends, a recap shows what your eyes did while eyeOS stayed silent.
 
 Claude Sonnet 5.5 picks the smallest useful action: change the Mac, or ask you to rest. Cartesia Sonic speaks the rest — palming, a focus shift, deliberate blinks — and can read the page aloud.
 
 Every Claude action passes a code-enforced approval check: each kind of action the first time, the bigger ones every time. Feedback becomes memory. Reflection writes the next rules. The Log tracks what moved the eye score.
+
+You can see everything it does: the Live page shows what the camera tracks and an eye score, the Log rewinds your day, and the Agent page lists every decision with its reasoning and whether it helped. A menu bar popover and a small floating HUD, which brightens only when something drifts, keep it in view from any app.
 
 Camera frames never leave the Mac. Screenshots go only to the vision model (on your Mac unless you pick a hosted one), then wipe. Claude gets numbers, the app name, a short screen description and your rules. No images, window titles, page text. Calendar event titles only if you approve calendar access.
 
@@ -231,6 +235,22 @@ uv run pytest
 ```
 
 Running from a terminal makes macOS attribute the camera to the terminal app.
+
+## Demo video and Devpost media
+
+`video/` is a [Remotion](https://www.remotion.dev) project that renders the animated parts of the demo video and the Devpost gallery images. The numbers in them are illustrative, not real data.
+
+```sh
+cd video && npm install
+npm run studio                 # preview
+npm run render                 # memory + daily report segment, timed to public/voiceover.m4a
+npm run render:onboarding      # silent onboarding montage
+npm run render:agent           # Agent tab, timed to public/agent-tab.m4a
+npm run render:log             # Log tab, timed to public/log-tab.m4a
+npm run render:gallery         # 3:2 gallery images → out/gallery/
+```
+
+Scene timings live in `video/src/timing.ts`.
 
 ## Deviations from the spec
 
