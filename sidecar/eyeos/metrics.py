@@ -244,6 +244,7 @@ class Engine:
         self.rub_near = deque()      # (ts, dt) of near-hand hand frames, 1.5 s
         self.rub_last = -1e9
         self.rubbing = False
+        self.demo = False            # demo rubs count sooner and can repeat after the 10 s cooldown
         self.yawn_start = None
         self.screen_luma = None
         self.dark_mode = None
@@ -368,7 +369,9 @@ class Engine:
             self.last.update(o=o, ear=e, gx=gx, gy=gy, yaw=yaw, pitch=pitch, roll=roll)
             self._posture_sample(t, pitch, roll, face[1][1])
 
-        # rubbing (§4.9): hand frames only; face dropout during near doesn't reset
+        # rubbing (§4.9): hand frames only; face dropout during near doesn't reset.
+        # Demo only: a shorter near-window, and hand-landmark dropouts (the palm covers the eye) keep counting
+        # for a moment so a real rub still emits. Real detection below is unchanged when self.demo is false.
         hands = f.get("hands")
         if hands is not None and self.last_face is not None:
             lf = self.last_face
@@ -376,12 +379,15 @@ class Engine:
             centers = (eye_center(lf, R_EAR), eye_center(lf, L_EAR))
             md = min((dist(hand[i], c, w, h) for hand in hands for i in FINGERTIPS for c in centers), default=1e9)
             near = md < 0.35 * iod
+            if self.demo and not hands and self.rub_near and t - self.rub_near[-1][0] <= 0.8:
+                near = True  # fingertips were just on the eye; the hand landmarker lost them
             self.rubbing = near
             prev = self.rub_near[-1][0] if self.rub_near else None
             if near:
                 self.rub_near.append((t, min(t - prev, 0.2) if prev else 0.1))
             _trim(self.rub_near, t - 1.5)
-            if sum(d for _, d in self.rub_near) >= 0.7 and t - self.rub_last >= 30:
+            need, refractory = (0.35, 10) if self.demo else (0.7, 30)
+            if sum(d for _, d in self.rub_near) >= need and t - self.rub_last >= refractory:
                 self.rub_last = t
                 self.rub_near.clear()
                 events.append({"kind": "rub", "ts": t})

@@ -52,6 +52,27 @@ def call(app, name, args):
     return out, executed
 
 
+def test_demo_eye_rub_starts_palming_with_voice(tmp_path):
+    app = FakeApp(tmp_path, {"approved": True})
+    app.log_event = lambda *a, **k: None
+    agent = Agent(app)
+    started = {}
+
+    async def fake_exercise(kind, duration_s, steps, call_id=None):
+        started.update(kind=kind, duration_s=duration_s, first=steps[0]["text"], call_id=call_id)
+
+    async def no_outcome(*_a, **_k):
+        return None
+
+    agent._exercise = fake_exercise
+    agent.evaluate_outcome = no_outcome
+    asyncio.run(agent.demo_palming([{"id": "eye_rub", "value": 1, "fired_at": 1}]))
+    assert started["kind"] == "palming" and started["duration_s"] == 40
+    assert "warm" in started["first"].lower()
+    assert app.asked == [] and agent.busy is False
+    assert any(m.get("type") == "agent_text" and "rubbing" in m["text"] for m in app.sent)
+
+
 def test_first_use_always_asks_even_for_auto_tier(tmp_path):
     app = FakeApp(tmp_path, {"approved": True, "remember": True})
     out, ex = call(app, "remind_to_blink", {"count": 2, "intensity": 0.5})

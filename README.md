@@ -1,6 +1,22 @@
 # eyeOS
 
-An eye-strain coach for macOS. See [SPEC.md](SPEC.md).
+![eyeOS](eyeOS-title.png)
+
+eyeOS is for computer science students in deadline week, and hackathon teams in the 24-hour version: one long MacBook session, a clock on the other end.
+
+The name is literal. An OS schedules work and manages resources. eyeOS schedules rest, and manages brightness, dark mode, contrast.
+
+It lives in the menu bar. The camera and MediaPipe turn each frame into blinks, distance, posture, rubs, yawns, sitting too close, and a dark room against a bright display — an eye score you watch live.
+
+Gemma 4 on Ollama checks one screenshot every 30 seconds. In deep work it enters Zen: measuring continues, nudges wait. When Zen ends, a recap shows what your eyes did while eyeOS stayed silent.
+
+Claude Sonnet 5.5 picks the smallest useful action: change the Mac, or ask you to rest. Cartesia Sonic speaks the rest — palming, a focus shift, deliberate blinks — and can read the page aloud.
+
+Every Claude action needs code-enforced approval. Feedback becomes memory. Reflection writes the next rules. The Log tracks what moved the eye score.
+
+Camera frames never leave the Mac. Screenshots stay local, then wipe. Claude gets numbers, the app name, and your rules. No images, titles, page text.
+
+See [SPEC.md](SPEC.md).
 
 ## Architecture
 

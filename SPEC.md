@@ -389,7 +389,7 @@ The trigger engine runs on each 5 Hz snapshot. Triggers are deterministic, so th
 | `heartbeat` | every 900 s while face present | 180 s |
 
 Rate limiting:
-- Each trigger id has a **cooldown** (default 600 s, demo 45 s) after it fires.
+- Each trigger id has a **cooldown** (default 600 s, demo 10 s) after it fires.
 - **Global minimum gap** between LLM calls: 120 s (demo 30 s).
 - **One agent run at a time.** Triggers that fire during a run, or inside the global gap, are queued and **merged** into the next run's trigger list.
 - `eye_rub` bypasses the global gap (but not its cooldown), because instant reaction is the demo moment.
@@ -870,7 +870,8 @@ All overlays are borderless `NSPanel`s at `.screenSaver` or `.floating` level, s
 ## 12. Demo mode
 
 Turned on in Settings → Demo.
-- Uses the demo values from §5 for sustain durations, a 45 s trigger cooldown, `agent.global_gap_s=30` and `heartbeat=180`. The Zen recap shows after ≥ 1 min (instead of 5). Lower `zen.enter_min` to demo auto Zen, or start it manually.
+- Uses the demo values from §5 for sustain durations, a 10 s trigger cooldown, `agent.global_gap_s=30` and `heartbeat=180`. The Zen recap shows after ≥ 1 min (instead of 5). Lower `zen.enter_min` to demo auto Zen, or start it manually.
+- An eye rub in demo counts after 0.35 s with a fingertip near the eye (and keeps counting for a moment if the hand landmarker drops out) and always starts the palming exercise with voice. The model is not asked. Real detection and real agent runs are unchanged.
 - **Seed history** writes 7 days of synthetic `metrics_1hz` aggregates (at 1/min resolution, to keep it small), events, runs, tool calls and outcomes, and summaries, all with `seeded=1`. Seeded data has a declining blink rate (14 → 7 over the week) and rising incomplete %, so `suggest_seeing_eye_doctor` becomes eligible and the summary has a story.
 - **Wipe seeded data** deletes `WHERE seeded=1`.
 - **Reset approvals** (Settings → Tools) lets the first-use approval flow be shown again.

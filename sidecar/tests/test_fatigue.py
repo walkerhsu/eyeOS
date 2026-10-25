@@ -98,6 +98,25 @@ def test_short_dropout_does_not_reset_sustain(tmp_path):
     assert "too_close" in fired
 
 
+def test_demo_eye_rub_cooldown_is_10s_and_a_rub_during_it_is_kept(tmp_path):
+    s = DB(tmp_path / "t.db").settings()
+    s["demo.enabled"] = True
+    t = Triggers()
+    assert [x["id"] for x in t.evaluate({}, [{"kind": "rub"}], s, 1000)] == ["eye_rub"]
+    assert t.evaluate({}, [{"kind": "rub"}], s, 1009) == [] and t.rub_hold
+    assert [x["id"] for x in t.evaluate({}, [], s, 1010)] == ["eye_rub"]
+    assert not t.rub_hold
+
+
+def test_real_eye_rub_cooldown_stays_10_minutes(tmp_path):
+    s = DB(tmp_path / "t.db").settings()
+    assert s["demo.enabled"] is False and s["agent.trigger_cooldown_s"] == 600
+    t = Triggers()
+    assert t.evaluate({}, [{"kind": "rub"}], s, 1000)
+    assert t.evaluate({}, [{"kind": "rub"}], s, 1010) == [] and not t.rub_hold
+    assert t.evaluate({}, [], s, 1600) == []  # still inside the 600 s cooldown, and nothing was held
+
+
 def test_too_close_skips_global_gap(tmp_path):
     s = DB(tmp_path / "t.db").settings()
     t = Triggers()

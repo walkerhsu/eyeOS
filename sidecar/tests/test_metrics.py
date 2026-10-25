@@ -191,13 +191,48 @@ def test_engine_real_break():
     assert eng.snapshot()["since_real_break_s"] <= 1
 
 
+def _rub_hand():
+    rc = M.eye_center(_synth_face(), M.R_EAR)
+    return [[rc[0], rc[1], 0] for _ in range(21)]
+
+
 def test_engine_rub():
     eng = M.Engine()
     _, t = _feed(eng, 0.0, 1, lambda s: 1.0)
-    rc = M.eye_center(_synth_face(), M.R_EAR)
-    hand = [[rc[0], rc[1], 0] for _ in range(21)]
-    evs, t = _feed(eng, t, 1.5, lambda s: None, hands=[hand])
+    evs, t = _feed(eng, t, 1.5, lambda s: None, hands=[_rub_hand()])
     assert sum(e["kind"] == "rub" for e in evs) == 1
+
+
+def test_demo_rub_fires_sooner_and_real_rub_does_not():
+    hand = [_rub_hand()]
+    real = M.Engine()
+    evs, _ = _feed(real, 0.0, 0.4, lambda s: 1.0, hands=hand)
+    assert not any(e["kind"] == "rub" for e in evs)
+    demo = M.Engine()
+    demo.demo = True
+    evs, _ = _feed(demo, 0.0, 0.4, lambda s: 1.0, hands=hand)
+    assert sum(e["kind"] == "rub" for e in evs) == 1
+
+
+def test_demo_rub_bridges_a_lost_hand_and_real_rub_does_not():
+    face = _synth_face()
+    hand = [_rub_hand()]
+
+    def run(demo):
+        eng = M.Engine()
+        eng.demo = demo
+        evs, t = [], 0.0
+        frame = {"w": 640, "h": 480, "face": face, "blend": {}, "transform": None, "luma": 100.0}
+        for _ in range(4):  # a brief detected touch, not enough on its own
+            evs += eng.update({**frame, "ts": t, "hands": hand})
+            t += 1 / 30
+        for _ in range(12):  # palm covers the eye: the hand landmarker returns nothing
+            evs += eng.update({**frame, "ts": t, "hands": []})
+            t += 1 / 30
+        return evs
+
+    assert any(e["kind"] == "rub" for e in run(True))
+    assert not any(e["kind"] == "rub" for e in run(False))
 
 
 FIX = Path(__file__).parent / "fixtures" / "session_a.jsonl.gz"

@@ -128,10 +128,12 @@ class App:
                         cam.release()
                         time.sleep(1)
                         continue
+                    vision.hands_every = 1 if self.settings.get("demo.enabled") else 3
                     f = vision.process(bgr, ts)
                     if rec:
                         rec.write(json.dumps({k: f.get(k) for k in ("ts", "w", "h", "face", "blend", "transform", "hands", "luma", "pose")}) + "\n")
                 with self.lock:
+                    self.engine.demo = bool(self.settings.get("demo.enabled"))
                     events = self.engine.update(f)
                 self.frame = bgr
                 if f["face"] is not None or f["hands"] is not None:
@@ -237,7 +239,9 @@ class App:
                                    {"event": "deferred", "triggers": sorted(self._held),
                                     "reason": f"{(c.get('situation') or 'busy').replace('_', ' ')}: {c.get('reason') or ''}".strip(": ")})
                 run = self.triggers.take(time.time(), self.agent.busy, s, interruptible)
-                if run and s["agent.enabled"] and self.agent.available():
+                if run and s["agent.enabled"] and s["demo.enabled"] and any(t["id"] == "eye_rub" for t in run):
+                    asyncio.create_task(self.agent.demo_palming(run))  # demo: always the voiced palming exercise
+                elif run and s["agent.enabled"] and self.agent.available():
                     asyncio.create_task(self.agent.run(run))
             except Exception:  # noqa: BLE001
                 traceback.print_exc()

@@ -82,6 +82,9 @@ EXERCISES = {
 KEEP_GOING = {"palming": "Keep your eyes closed and breathe slowly.", "focus_shift": "Hold your focus there.",
               "deliberate_blink": "Keep going: close fully, pause, then open slowly.",
               "gaze_trace": "Stay with the dot."}
+DEMO_PALMING_S = 40  # demo eye-rub response only; the model still chooses in a real session
+DEMO_PALM_TEXT = "You're rubbing your eyes. Let's warm your palms and rest them."
+
 DONE_TEXT = {"palming": "The exercise is done. Open your eyes slowly and blink a few times.",
              "focus_shift": "The exercise is done. Your eyes can relax now.",
              "deliberate_blink": "The exercise is done. You can open your eyes and carry on.",
@@ -590,6 +593,44 @@ class Agent:
         ok, _ = await S.arun(S.set_focus, False)
         if ok:
             self.state["focus_on"] = False
+
+    async def demo_palming(self, triggers):
+        """Demo only: an eye rub always starts palming with voice. The model is not asked, and approval is skipped
+        so the exercise actually begins. Real sessions still go through run()."""
+        self.busy = True
+        app, db = self.app, self.db
+        t0 = time.time()
+        run_id = db.x("INSERT INTO agent_runs (ts_start, status, triggers) VALUES (?, 'started', ?)",
+                      (t0, json.dumps(triggers)))
+        for tr in triggers:
+            if tr.get("event_id"):
+                db.x("UPDATE events SET run_id=? WHERE id=?", (run_id, tr["event_id"]))
+        self.run_text[run_id] = DEMO_PALM_TEXT
+        await app.send({"type": "agent_run", "run_id": run_id, "ts": t0, "phase": "started", "triggers": triggers})
+        await app.send({"type": "agent_text", "run_id": run_id, "text": DEMO_PALM_TEXT})
+        status, err = "finished", None
+        try:
+            args = {"type": "palming", "duration_s": DEMO_PALMING_S}
+            cid = db.x("""INSERT INTO tool_calls (run_id, ts, name, args, status, tier, approval, result)
+                          VALUES (?, ?, 'start_guided_eye_exercise', ?, 'executing', 'ask', 'demo', ?)""",
+                       (run_id, time.time(), json.dumps(args), f"palming exercise started ({DEMO_PALMING_S} s)"))
+            app.log_event("system", "eye_rub", None, {"event": "exercise", "by": "demo", **args})
+            await app.send({"type": "tool_call", "run_id": run_id, "call_id": cid, "name": "start_guided_eye_exercise",
+                            "args": args, "status": "executing", "tier": "ask", "executor": "swift"})
+            asyncio.create_task(self.evaluate_outcome(cid, "start_guided_eye_exercise", "blink_rate", time.time()))
+            await self._exercise("palming", DEMO_PALMING_S, exercise_steps("palming", DEMO_PALMING_S), cid)
+        except Exception as e:  # noqa: BLE001
+            status, err = "error", f"{type(e).__name__}: {e}"
+            traceback.print_exc()
+        finally:
+            self.busy = False
+        db.x("UPDATE agent_runs SET ts_end=?, status=?, text=?, error=? WHERE id=?",
+             (time.time(), status, DEMO_PALM_TEXT, err, run_id))
+        msg = {"type": "agent_run", "run_id": run_id, "ts": time.time(), "phase": status, "triggers": triggers,
+               "latency_s": round(time.time() - t0, 2)}
+        if err:
+            msg["error"] = err
+        await app.send(msg)
 
     async def user_exercise(self, kind, duration_s):
         """An exercise the user started from the menu bar or HUD. No approval (the click is consent), but it is

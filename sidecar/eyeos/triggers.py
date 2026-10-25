@@ -5,6 +5,7 @@ from .zen import blink_base, blink_high, blink_low
 GRACE_S = 3.0          # a sustained condition survives dropouts this short (one noisy frame used to reset it)
 PRIORITY = {"eye_rub", "too_close"}  # skip the global gap and the conductor's "not now": act while it's happening
 STALE_S = 600          # a nudge held this long (e.g. through a meeting) is no longer relevant
+DEMO_COOLDOWN_S = 10   # demo only; real runs use agent.trigger_cooldown_s (600)
 
 
 class Triggers:
@@ -15,6 +16,7 @@ class Triggers:
         self.pending = {}     # id -> trigger dict, merged into the next run
         self.last_run = -1e9
         self.last_event_run = -1e9
+        self.rub_hold = False  # demo: an eye rub that arrived during the cooldown, fired once it ends
 
     def params(self, tid, s):
         thr, sus, dthr, dsus = TRIGGERS[tid]
@@ -28,7 +30,9 @@ class Triggers:
         if not active:
             self.since.clear()
             return fired
-        cooldown = 45 if s["demo.enabled"] else s["agent.trigger_cooldown_s"]
+        cooldown = DEMO_COOLDOWN_S if s["demo.enabled"] else s["agent.trigger_cooldown_s"]
+        if not s["demo.enabled"]:
+            self.rub_hold = False
         kinds = {e["kind"] for e in events}
         for tid in TRIGGERS:
             if not s[f"triggers.{tid}.enabled"]:
@@ -37,6 +41,10 @@ class Triggers:
             if tid == "heartbeat":
                 thr = 180 if s["demo.enabled"] else s["agent.heartbeat_s"]
             cond, value = self._cond(tid, snap, kinds, thr, now)
+            if tid == "eye_rub" and s["demo.enabled"] and self.rub_hold and not cond:
+                if now - self.last_fired.get(tid, -1e9) >= cooldown:
+                    cond, value = True, 1  # the rub landed during the cooldown; release it now
+                    self.rub_hold = False
             if not cond:
                 self.false_at.setdefault(tid, now)
                 if now - self.false_at[tid] > GRACE_S:
@@ -47,7 +55,11 @@ class Triggers:
             if now - start < sus:
                 continue
             if now - self.last_fired.get(tid, -1e9) < (thr if tid == "heartbeat" else cooldown):
+                if tid == "eye_rub" and s["demo.enabled"]:
+                    self.rub_hold = True  # don't drop it; the rub event only exists on this tick
                 continue
+            if tid == "eye_rub":
+                self.rub_hold = False
             self.last_fired[tid] = now
             t = {"id": tid, "value": value, "fired_at": now}
             self.pending[tid] = t
