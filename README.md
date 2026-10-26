@@ -1,28 +1,54 @@
 # eyeOS
 
-![eyeOS](eyeOS-title.png)
+![eyeOS: an AI eye-habit coach in your Mac's menu bar](docs/images/hero.png)
 
-eyeOS is an AI eye-habit coach in your Mac's menu bar. It fixes the habits that strain your eyes without breaking your focus.
+**An AI eye-habit coach in your Mac's menu bar that fixes the habits straining your eyes without breaking your focus.**
 
-It's for people on screens not by choice, but because their work demands it: students pulling all-nighters, engineers, IT, accountants, and anyone at a desk all day, all chasing deadlines. It follows three design principles: **unobtrusive**, **adaptive**, and **transparent**.
+Computer vision syndrome, or digital eye strain, is the dry, tired, blurry-eyed feeling after hours at a screen. The advice is always the same: blink more, sit back, take breaks. That advice rarely survives a deadline, and 20-20-20 timers get dismissed the moment work gets real.
 
-The name is literal. An OS schedules work and manages resources. eyeOS schedules rest, and manages brightness, dark mode, contrast.
+eyeOS is for people on screens not by choice, but because their work demands it: students pulling all-nighters, engineers, IT, accountants, and anyone at a desk all day. It follows three design principles: **unobtrusive**, **adaptive**, and **transparent**.
 
-The camera and MediaPipe turn each frame into blinks, distance, posture, rubs, yawns, sitting too close, and a dark room against a bright display — an eye score you watch live.
+The name is literal. An OS schedules work and manages resources. eyeOS schedules rest, and manages brightness, dark mode, and contrast.
 
-Fixes happen in the moment and clear as soon as the habit does: stare and the screen softens until you blink, lean in and the edges dim until you sit back, squint and eyeOS offers bigger text, reach to rub your eyes and it offers palming instead.
+**Contents:** [What it does](#what-it-does) · [Architecture](#architecture) · [Built with](#built-with) · [Run](#run) · [Testing setup](#testing-setup) · [Zen mode](#zen-mode) · [Blink blur](#blink-blur) · [Eye gym](#eye-gym) · [Habit coach](#habit-coach) · [Voice](#voice-cartesia) · [Demo media](#demo-video-and-devpost-media) · [Spec](SPEC.md)
 
-A local AI model checks a screenshot ~every 30 seconds. If it notices you're doing deep work it enters Zen: measuring continues, nudges wait. When Zen ends, a recap shows what your eyes did while eyeOS stayed silent.
+## What it does
 
-Claude Sonnet 5.5 picks the smallest useful action: change the Mac, or ask you to rest. Cartesia Sonic speaks the rest — palming, a focus shift, deliberate blinks — and can read the page aloud.
+The camera and MediaPipe turn each frame into blinks, half blinks, stares, distance, posture, rubs, yawns, and a dark room against a bright display, rolled into a live 0–100 eye score.
 
-Every Claude action passes a code-enforced approval check: each kind of action the first time, the bigger ones every time. Feedback becomes memory. Reflection writes the next rules. The Log tracks what moved the eye score.
+### Nudges small enough to work through
 
-You can see everything it does: the Live page shows what the camera tracks and an eye score, the Log rewinds your day, and the Agent page lists every decision with its reasoning and whether it helped. A menu bar popover and a small floating HUD, which brightens only when something drifts, keep it in view from any app.
+![Four nudges: the screen softens, the edges dim, bigger text, palming instead of rubbing](docs/images/nudges.png)
 
-Camera frames never leave the Mac. Screenshots go only to the vision model (on your Mac unless you pick a hosted one), then wipe. Claude gets numbers, the app name, a short screen description and your rules. No images, window titles, page text. Calendar event titles only if you approve calendar access.
+Fixes happen in the moment and clear as soon as the habit does: stare and the screen softens until you blink, lean in and the edges dim until you sit back, squint and eyeOS offers bigger text, reach to rub your eyes and it offers palming instead. When more is needed, Claude Sonnet 5.5 picks the smallest useful action: change the Mac (brightness, dark mode, contrast, Do Not Disturb), or ask you to rest while a Cartesia voice talks you through eye exercises the camera checks.
 
-See [SPEC.md](SPEC.md).
+### Quiet when you're locked in
+
+A local vision model checks a screenshot about every 30 seconds to work out what you're doing and how interruptible you are. During deep work it turns on **Zen**: measuring continues, nudges wait. When Zen ends, a recap shows what your eyes did while eyeOS stayed silent. See [Zen mode](#zen-mode).
+
+### It learns what works for you
+
+![The learning loop: approve, measure, remember, improve, report](docs/images/learning.png)
+
+Every Claude action passes a code-enforced approval check: each kind of action the first time, the bigger ones every time. Every nudge is then measured against what your eyes did next. Outcomes, declines, and answers become memory rules, a reflection pass writes new ones after each stretch of use, and patterns like *"most of your eye rubs come after 45 minutes without a break"* let eyeOS step in before the habit starts.
+
+### Nothing is a black box
+
+![The Agent tab: every decision with its reasoning, actions, and whether it helped](docs/images/agent-tab.png)
+
+![The Log tab: drag across the day to see what happened, when, and why](docs/images/log-tab.png)
+
+The **Live** page shows what the camera tracks and your eye score. The **Agent** page lists every decision with its reasoning, its actions, and how often each fix helped. The **Log** lets you rewind your day. A menu bar popover and a small floating HUD, which brightens only when something drifts, keep eyeOS in view from any app.
+
+![The daily summary and a week of eye scores](docs/images/daily-report.png)
+
+### Private by design
+
+![What stays on your Mac and what reaches the cloud](docs/images/privacy.png)
+
+Camera frames never leave the Mac. Screenshots go only to the vision model (on your Mac unless you pick a hosted one), then are wiped. Claude gets numbers, the app name, a short screen description, and your rules: no images, window titles, or page text. Calendar event titles are shared only if you approve calendar access. Details are under [Architecture](#architecture).
+
+*The screenshots above are rendered from [`video/`](video/) and show illustrative data.*
 
 ## Architecture
 
@@ -72,6 +98,15 @@ Mac, Settings warns that screenshots leave the Mac; spoken summaries use the sam
 The cloud model gets numbers, the app name, the conductor's short text and memory rules: no images, window titles or
 page text. If you approve the calendar tool, it also sees the titles of your next few events. Voice uses macOS `say`
 unless you add a Cartesia key.
+
+## Built with
+
+| Layer | Tools |
+|---|---|
+| Mac app | SwiftUI (Live, Log, Agent, and Settings pages, menu bar extra, HUD, overlays), SwiftPM |
+| On-device | Python sidecar over a token-authenticated localhost WebSocket, OpenCV, MediaPipe Face / Hand / Pose, Gemma 4 via Ollama as the conductor, SQLite |
+| Cloud | Claude Agent SDK on Claude Sonnet 5.5 (Codex CLI or any OpenAI-compatible server also work), Cartesia Sonic 3 for voice |
+| System actions | macOS display settings, Shortcuts for contrast and Focus |
 
 ## Run
 
@@ -238,7 +273,7 @@ Running from a terminal makes macOS attribute the camera to the terminal app.
 
 ## Demo video and Devpost media
 
-`video/` is a [Remotion](https://www.remotion.dev) project that renders the animated parts of the demo video and the Devpost gallery images. The numbers in them are illustrative, not real data.
+`video/` is a [Remotion](https://www.remotion.dev) project that renders the animated parts of the demo video and the Devpost gallery images. The numbers in them are illustrative, not real data. The images in `docs/images/` are copies of the gallery renders.
 
 ```sh
 cd video && npm install
