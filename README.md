@@ -10,7 +10,7 @@ eyeOS is for people on screens not by choice, but because their work demands it:
 
 The name is literal. An OS schedules work and manages resources. eyeOS schedules rest, and manages brightness, dark mode, and contrast.
 
-**Contents:** [What it does](#what-it-does) · [Architecture](#architecture) · [Built with](#built-with) · [Install](#install) · [Build from source](#build-from-source) · [Testing setup](#testing-setup) · [Zen mode](#zen-mode) · [Blink blur](#blink-blur) · [Eye gym](#eye-gym) · [Habit coach](#habit-coach) · [Voice](#voice-cartesia) · [Demo media](#demo-video-and-devpost-media) · [Spec](SPEC.md)
+**Contents:** [What it does](#what-it-does) · [Architecture](#architecture) · [Built with](#built-with) · [Install](#install) ([download](https://github.com/walkerhsu/eyeOS/releases/latest)) · [Build from source](#build-from-source) · [Testing setup](#testing-setup) · [Zen mode](#zen-mode) · [Blink blur](#blink-blur) · [Eye gym](#eye-gym) · [Habit coach](#habit-coach) · [Voice](#voice-cartesia) · [Demo media](#demo-video-and-devpost-media) · [Spec](SPEC.md)
 
 ## What it does
 
@@ -113,7 +113,7 @@ unless you add a Cartesia key.
 
 Requires a Mac with Apple Silicon and macOS 14 or later.
 
-1. Download `eyeOS-<version>-arm64.dmg`, open it and drag **eyeOS** into **Applications**.
+1. Download `eyeOS-<version>-arm64.dmg` from the [latest release](https://github.com/walkerhsu/eyeOS/releases/latest), open it and drag **eyeOS** into **Applications**.
 2. If this build isn't notarized, clear the download flag once in Terminal, or macOS refuses to open it (or blocks its
    built-in Python):
    ```sh
