@@ -1,12 +1,10 @@
 import AVFoundation
 import SwiftUI
 
-/// Demo mode keeps calibration warnings vague (except the blink check's); otherwise they say what went wrong.
-let calibrationUnexpected = "We noticed some unexpected things during calibration that may affect the quality of the calibration."
-
-/// First-run setup: welcome, then three short calibrations (distance, gaze, blink check). The 60 s blink
-/// baseline (calibration step 3) runs in the background after the sheet closes; the Live header shows its progress.
-/// Keys, Shortcuts and extra permissions live in Settings and are only needed for optional features.
+/// First-run setup: welcome, three short calibrations (distance, gaze, blink check), then two short setup pages:
+/// the AI (coach and screen awareness) and permissions. The 60 s blink baseline (calibration step 3) runs in the
+/// background after the sheet closes; the Live header shows its progress. Everything after the camera is optional
+/// and stays reachable in Settings › Setup.
 struct OnboardingView: View {
     @EnvironmentObject var store: Store
     var recalibrating = false           // calibration steps only, opened from Settings / Live
@@ -30,19 +28,21 @@ struct OnboardingView: View {
                 case 1: distanceStep
                 case 2: gazeStep
                 case 3: blinkStep
+                case 4: aiStep
+                case 5: permissionsStep
                 default: finished
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.horizontal, 36).padding(.bottom, 28)
         }
-        .frame(width: 560, height: 500)
+        .frame(width: 600, height: page == 4 ? 620 : page == 5 ? 540 : 500)
         .onAppear { if recalibrating { page = 1 } }
     }
 
     var dots: some View {
         HStack(spacing: 6) {
-            ForEach(1...4, id: \.self) { i in
+            ForEach(1...(recalibrating ? 3 : 5), id: \.self) { i in
                 Capsule().fill(i <= page ? Color.teal : Color.white.opacity(0.15)).frame(width: i == page ? 22 : 8, height: 8)
             }
         }
@@ -149,7 +149,7 @@ struct OnboardingView: View {
     /// Calibration step 4: three prompted blinks set this user's complete / incomplete blink thresholds.
     var blinkStep: some View {
         CalibrationStep(step: 4, title: "Blink 3 times", subtitle: "Blink 3 times normally, about a second apart. Click Start when you're ready.",
-                        next: { page = 4 }) {
+                        next: { page = recalibrating ? 6 : 4 }) {
             let c = store.calibration?.int("step") == 4 ? store.calibration : nil
             let seen = c?.str("phase") == "failed" ? 0 : c?.int("blinks") ?? 0
             HStack(spacing: 22) {
@@ -163,6 +163,39 @@ struct OnboardingView: View {
             }
             .animation(.easeInOut(duration: 0.2), value: seen)
         }
+    }
+
+    /// The AI: the coach (Claude, Codex or a server) and screen awareness (a vision model on this Mac). Both optional.
+    var aiStep: some View {
+        setupPage("Connect your AI", "Both are optional. Tracking already works.", next: { page = 5 }) {
+            VStack(spacing: 12) {
+                AgentSetupCard()
+                VisionSetupCard()
+            }
+            .setupChecks()
+        }
+    }
+
+    /// Permissions for optional actions. macOS only asks when Grant is clicked.
+    var permissionsStep: some View {
+        setupPage("Allow what you want", "Each one unlocks a little more. Change them anytime in Settings.", next: { page = 6 }) {
+            PermissionsPanel()
+        }
+    }
+
+    func setupPage<C: View>(_ title: String, _ subtitle: String, next: @escaping () -> Void, @ViewBuilder content: () -> C) -> some View {
+        VStack(spacing: 16) {
+            VStack(spacing: 4) {
+                Text(title).font(.system(size: 24, weight: .bold))
+                Text(subtitle).font(.callout).foregroundStyle(.secondary)
+            }
+            ScrollView { content() }
+            Button(action: next) {
+                Text("Continue").font(.headline).frame(width: 220, height: 30)
+            }
+            .buttonStyle(.borderedProminent).controlSize(.large).keyboardShortcut(.defaultAction)
+        }
+        .padding(.top, 6)
     }
 
     var finished: some View {
@@ -231,9 +264,7 @@ struct CalibrationStep<Art: View>: View {
                 VStack(spacing: 6) {
                     Label("Saved, though it may be a little off", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.yellow).font(.callout.weight(.semibold))
-                    // the blink check's warnings say what to do differently, so they stay specific even in demo mode
-                    Text(store.setting("demo.enabled") && step != 4 ? calibrationUnexpected + " We suggest you try again."
-                         : warnings.joined(separator: " ") + " For the best tracking, try this step again.")
+                    Text(warnings.joined(separator: " ") + " For the best tracking, try this step again.")
                         .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 400)
                 }
                 HStack(spacing: 14) {

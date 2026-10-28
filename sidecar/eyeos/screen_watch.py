@@ -27,6 +27,8 @@ from . import openai_compat as OA
 from .tools import system as S
 
 OLLAMA = "http://127.0.0.1:11434"
+OLLAMA_DIRS = ["/usr/local/bin", "/opt/homebrew/bin", "/Applications/Ollama.app/Contents/Resources",
+               os.path.expanduser("~/Applications/Ollama.app/Contents/Resources")]
 
 PROMPT = """You are the conductor of eyeOS, an eye-comfort assistant on this Mac. You see a screenshot of the user's
 screen right now, plus their eye/posture metrics and what you concluded 30 seconds ago. Decide what is going on.
@@ -61,6 +63,15 @@ def _post(path, body, timeout):
 def _get(path, timeout=2):
     with urllib.request.urlopen(OLLAMA + path, timeout=timeout) as r:
         return json.load(r)
+
+
+def ollama_exe():
+    return shutil.which("ollama", path=os.pathsep.join(OLLAMA_DIRS))
+
+
+def has_model(names, model):
+    """Ollama lists `gemma4` as `gemma4:latest`."""
+    return model in names or (":" not in model and f"{model}:latest" in names)
 
 
 def _parse(raw):
@@ -135,7 +146,7 @@ class ScreenWatch:
             return True
         except (urllib.error.URLError, OSError, ValueError):
             pass
-        exe = shutil.which("ollama", path="/usr/local/bin:/opt/homebrew/bin:/Applications/Ollama.app/Contents/Resources")
+        exe = ollama_exe()
         if not exe:
             self.error = "Ollama isn't installed (https://ollama.com), so the screen isn't analyzed"
             return False
@@ -155,6 +166,35 @@ class ScreenWatch:
         if not await self.ensure_server():
             raise RuntimeError(self.error)
         return sorted(m["name"] for m in (await asyncio.to_thread(_get, "/api/tags")).get("models") or [])
+
+    async def ollama_status(self):
+        """For the setup checklist: is Ollama installed and running, and is the vision model downloaded?"""
+        model = self.settings()["privacy.local_model"]
+        out = {"installed": bool(ollama_exe()), "running": False, "model": model, "has_model": False}
+        try:
+            names = await self.ollama_models()
+        except Exception as e:  # noqa: BLE001 - not installed, or it wouldn't start
+            return {**out, "error": str(e)[:200]}
+        return {**out, "installed": True, "running": True, "has_model": has_model(names, model)}
+
+    async def pull(self, model, progress):
+        """Download a model with Ollama's /api/pull; progress(dict) gets each status line as it streams."""
+        if not await self.ensure_server():
+            raise RuntimeError(self.error)
+        loop = asyncio.get_running_loop()
+
+        def go():
+            req = urllib.request.Request(OLLAMA + "/api/pull", data=json.dumps({"model": model, "name": model}).encode(),
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=600) as r:
+                for line in r:
+                    m = json.loads(line)
+                    if m.get("error"):
+                        raise RuntimeError(m["error"])
+                    loop.call_soon_threadsafe(progress, m)
+        await asyncio.to_thread(go)
+        self.error = None
+        self.wake.set()  # look at the screen now that there's a model
 
     async def ask(self, prompt, images=(), json_mode=True, timeout=180):
         """One chat turn with the vision model. Returns the reply text."""

@@ -49,8 +49,11 @@ final class Store: ObservableObject {
     @Published var baseline: J = [:]
     @Published var calibration: J?
     @Published var shortcuts: J?
-    @Published var doctor: J?
     @Published var models: [String: J] = [:]                      // "agent" / "vision" -> what that server lists
+    @Published var setup: J?                                       // setup checklist: agent sign-in, vision model
+    @Published var agentTest: J?                                   // last "Test" result; ["running": true] while it runs
+    @Published var modelPull: J?                                   // vision model download progress
+    @Published var perms: [String: Bool] = [:]                     // camera / screen / ax / automation, checked without prompting
     @Published var summary: J?
     @Published var events: [J] = []                                // log feed events (live + history)
     @Published var runs: [Int: RunRow] = [:]
@@ -69,7 +72,7 @@ final class Store: ObservableObject {
         sidecar.onConnected = { [weak self] ok in
             guard let self else { return }
             self.connected = ok
-            if ok { self.fatal = nil; self.loadDay() }
+            if ok { self.fatal = nil; self.loadDay(); self.refreshPermissions() }
             // a step can't outlive its sidecar (the sidecar logs it as interrupted when it starts again)
             if let c = self.calibration, ["started", "progress"].contains(c.str("phase") ?? "") {
                 self.calibration = ["type": "calibration", "step": c.int("step") ?? 0, "phase": "failed", "progress": 1,
@@ -77,6 +80,19 @@ final class Store: ObservableObject {
             }
         }
         sidecar.onFatal = { [weak self] s in self?.fatal = s }
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { Store.shared.refreshPermissions() }
+        }
+    }
+
+    /// Reads every permission without making macOS ask, and tells the sidecar which background work it may now do
+    /// (screenshots, window titles). Prompts only come from the Grant buttons.
+    func refreshPermissions() {
+        Permissions.check { [weak self] p in
+            guard let self else { return }
+            self.perms = p
+            self.sidecar.send(["type": "permissions", "screen": p["screen"] ?? false, "automation": p["automation"] ?? false])
+        }
     }
 
     func setting(_ k: String) -> Bool { (settings[k] as? Bool) ?? false }
@@ -147,7 +163,7 @@ final class Store: ObservableObject {
             calibration = m
             // the blink baseline runs after setup closes, so a weak result is reported in a banner
             if m.int("step") == 3, m.str("phase") == "done", let w = m["warnings"] as? [String], !w.isEmpty {
-                overlays.showWeakBaseline(setting("demo.enabled") ? calibrationUnexpected : w.joined(separator: " "))
+                overlays.showWeakBaseline(w.joined(separator: " "))
             }
         case "history": applyHistory(m)
         case "summary":
@@ -158,8 +174,10 @@ final class Store: ObservableObject {
             preferences = m.arr("rows")
             baseline = m.obj("baseline") ?? [:]
         case "shortcuts": shortcuts = m
-        case "doctor_eligibility": doctor = m
         case "models": models[m.str("role") ?? ""] = m
+        case "setup": setup = m
+        case "agent_test": agentTest = m
+        case "model_pull": modelPull = m.bool("done") && m.str("error") == nil ? nil : m
         case "error": lastError = m.str("message")
         default: break
         }
@@ -248,7 +266,9 @@ final class Store: ObservableObject {
     }
     /// Why the agent can't run, for tooltips.
     var agentMissing: String {
-        provider == "openai" ? "No model is set for the OpenAI-compatible server" : "The \(providerName) CLI wasn't found"
+        provider == "openai" ? "No model is set for the OpenAI-compatible server"
+            : status.obj("agent_clis")?.str(provider) == nil ? "The \(providerName) CLI wasn't found"
+            : "Sign in to \(providerName) in Settings › Setup"
     }
     var agentAvailable: Bool { status.bool("agent_available") }
 

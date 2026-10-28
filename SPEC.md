@@ -2,7 +2,7 @@
 
 An eye-strain coach for macOS. A webcam and Google MediaPipe track your face. eyeOS computes eye-strain and fatigue metrics from the landmarks. An AI agent (Claude) reasons over those metrics and adjusts your Mac or nudges you to rest. Every reasoning step and every action is logged and shown in the app.
 
-Status: hackathon build, demo-first. Decisions below were settled in a design review. Anything marked **nice-to-have** comes after the must-demo set works end to end.
+Status: started as a hackathon build; now packaged for others to install (§12). Decisions below were settled in a design review. Anything marked **nice-to-have** comes after the must-demo set works end to end.
 
 ---
 
@@ -14,7 +14,7 @@ Status: hackathon build, demo-first. Decisions below were settled in a design re
 - Ask the user before the first use of any action tool, then follow per-tool tiers.
 - Log everything: metrics, events, agent reasoning, tool calls, approvals and the measured outcome of each intervention.
 - Ship a native-feeling macOS app with three pages (Live, Log, Settings) and a menu bar extra.
-- Make the live demo reliable (demo mode).
+- Install like any Mac app: one download, setup inside the app (§12).
 
 ### Non-goals (hackathon)
 - No medical claims. eyeOS never diagnoses anything (see §9.6).
@@ -98,7 +98,6 @@ eyeOS/
     │   ├── tts.py
     │   ├── db.py
     │   ├── server.py        # websockets server
-    │   └── demo.py          # demo-mode seeding
     └── tests/
         ├── fixtures/        # recorded landmark sessions (.jsonl.gz)
         └── test_metrics.py
@@ -372,27 +371,27 @@ It is display-only; the agent and triggers use the raw metrics.
 
 The trigger engine runs on each 5 Hz snapshot. Triggers are deterministic, so the LLM is only woken when something is worth reasoning about.
 
-| id | Condition (default) | Demo-mode value |
-|---|---|---|
-| `low_blink_rate` | `blink_rate < 8` sustained 120 s | 30 s |
-| `long_stare` | `current_stare_s > 15` | 8 s |
-| `incomplete_blinks` | `incomplete_pct > 0.40` sustained 60 s | 20 s |
-| `drowsy` | `perclos > 0.15` | same |
-| `long_blinks` | `long_blink_count ≥ 3` in 60 s | same |
-| `sustained_squint` | `squinting` ≥ 30 s | 10 s |
-| `too_close` | `distance_cm < 40` sustained 60 s | 15 s |
-| `eye_rub` | rub event | same |
-| `yawning` | `yawn_count_5m ≥ 2` | ≥ 1 |
-| `dark_room_bright_screen` | mismatch (§4.11) 60 s | 15 s |
-| `no_break` | `since_real_break_s > 1200` (20 min) | 120 s |
-| `break_taken` | a real break just ended. Used to evaluate a pending `suggest_look_out_window` or exercise and to clear `no_break`. | same |
-| `heartbeat` | every 900 s while face present | 180 s |
+| id | Condition (default) |
+|---|---|
+| `low_blink_rate` | `blink_rate < 8` sustained 120 s |
+| `long_stare` | `current_stare_s > 15` |
+| `incomplete_blinks` | `incomplete_pct > 0.40` sustained 60 s |
+| `drowsy` | `perclos > 0.15` |
+| `long_blinks` | `long_blink_count ≥ 3` in 60 s |
+| `sustained_squint` | `squinting` ≥ 30 s |
+| `too_close` | `distance_cm < 40` sustained 60 s |
+| `eye_rub` | rub event |
+| `yawning` | `yawn_count_5m ≥ 2` |
+| `dark_room_bright_screen` | mismatch (§4.11) 60 s |
+| `no_break` | `since_real_break_s > 1200` (20 min) |
+| `break_taken` | a real break just ended. Used to evaluate a pending `suggest_look_out_window` or exercise and to clear `no_break`. |
+| `heartbeat` | every 900 s while face present |
 
 Rate limiting:
-- Each trigger id has a **cooldown** (default 600 s, demo 10 s) after it fires.
-- **Global minimum gap** between LLM calls: 120 s (demo 30 s).
+- Each trigger id has a **cooldown** (default 600 s) after it fires.
+- **Global minimum gap** between LLM calls: 120 s.
 - **One agent run at a time.** Triggers that fire during a run, or inside the global gap, are queued and **merged** into the next run's trigger list.
-- `eye_rub` bypasses the global gap (but not its cooldown), because instant reaction is the demo moment.
+- `eye_rub` bypasses the global gap (but not its cooldown), because the reaction only helps while it's happening.
 - `heartbeat` is skipped if any other trigger ran within the last heartbeat interval.
 - No triggers fire while tracking is paused, uncalibrated, or face absent > 2 min.
 - **Zen mode (§9.11):** triggers are still evaluated and logged, but the queue is cleared and no agent run starts.
@@ -417,7 +416,7 @@ These are sent at 15 fps **only when** setting `ui.show_camera_image == true`.
 | type | payload | rate |
 |---|---|---|
 | `hello` | `{version, calibrated, paused, settings}` | on connect |
-| `status` | `{camera_ok, face_present, paused, paused_until, calibrated, fps, agent_busy, demo_mode, has_claude, zen: {active, since, source, held_back, duration_s}, today: {screen_time_s, breaks, rubs, yawns, nudges, zen_s, longest_zen_s, avg_blink_rate, avg_eye_score}}` | on change + 1 Hz (`today` recomputed every 30 s) |
+| `status` | `{camera_ok, face_present, paused, paused_until, calibrated, fps, agent_busy, has_claude, zen: {active, since, source, held_back, duration_s}, today: {screen_time_s, breaks, rubs, yawns, nudges, zen_s, longest_zen_s, avg_blink_rate, avg_eye_score}}` | on change + 1 Hz (`today` recomputed every 30 s) |
 | `landmarks` | `{ts, face: [[x,y],…478] \| null, hands: [[[x,y],…21],…], iris: {r:[x,y,r], l:[x,y,r]}}` | 15 fps |
 | `metrics` | snapshot (§4.13) | 5 Hz |
 | `event` | `{id, ts, kind, trigger_id, value, details}` | as they happen |
@@ -467,7 +466,7 @@ These are sent at 15 fps **only when** setting `ui.show_camera_image == true`.
 |---|---|
 | `ui_response` | `{request_id, result}` |
 | `tool_result` | `{request_id, ok, result \| error}` |
-| `command` | `{name, args?}`, where `name` is one of `pause {minutes?}` (with `minutes`, tracking resumes by itself; `status.paused_until` holds the deadline), `resume`, `break_now` (shows a 20 s `look_away_card` the user asked for), `exercise {type, duration_s?}` (a guided exercise the user started: no approval, logged as a `tool_calls` row with `approval='user_started'` and no run, measured like the agent's; default 30 s, 20–120), `shutdown`, `calibrate {step}`, `reset_approvals`, `reset_memory` (delete every preference, clear `memory.suppressed`, and set `memory.reset_at` so learning and reflection ignore earlier evidence), `seed_demo`, `wipe_demo`, `generate_summary {date?}`, `audio_control {action: pause\|resume\|stop}`, `run_agent_now` (debug), `zen {on: bool}` (start / end Zen manually) |
+| `command` | `{name, args?}`, where `name` is one of `pause {minutes?}` (with `minutes`, tracking resumes by itself; `status.paused_until` holds the deadline), `resume`, `break_now` (shows a 20 s `look_away_card` the user asked for), `exercise {type, duration_s?}` (a guided exercise the user started: no approval, logged as a `tool_calls` row with `approval='user_started'` and no run, measured like the agent's; default 30 s, 20–120), `shutdown`, `calibrate {step}`, `reset_approvals`, `reset_memory` (delete every preference, clear `memory.suppressed`, and set `memory.reset_at` so learning and reflection ignore earlier evidence), `setup_check` (replies `setup {agent: {ok, installed, detail, provider}, vision: {installed, running, model, has_model, backend}}`), `test_agent` (one tiny real request; replies `agent_test {ok, latency_s | error}`), `pull_model {model?}` (downloads the vision model through Ollama; streams `model_pull {status, completed, total, done, error}`), `generate_summary {date?}`, `audio_control {action: pause\|resume\|stop}`, `run_agent_now` (debug), `zen {on: bool}` (start / end Zen manually) |
 | `set_setting` | `{key, value}` |
 | `get_settings` | `{}` |
 | `get_approvals` | `{}` |
@@ -489,9 +488,11 @@ Setup is kept to what tracking needs. Keys, permissions other than the camera, a
 4. **Calibration step 4 (blink check, ≤ 8 s):** "Blink 3 times normally, about a second apart. Click Start when you're ready." Three eye icons tick off as each blink is seen (`blinks` in the progress messages); the step ends 0.6 s after the third. Blinks are found in the raw EAR against this step's own open-eye level (the median EAR of the open frames between blinks), so a stale baseline can't hide them: a dip reaching `o ≤ 0.60` is a blink, one longer than 1 s was held shut and is left out. The step saves that open-eye level as `EAR_open_baseline` and sets the per-user `complete_o` / `incomplete_max_o` (§4.3), both applied before the baseline starts. Step 4 is numbered after the baseline so earlier logged steps keep their meaning; it runs after step 2.
    - **Fails** (nothing saved, the previous thresholds stay, **Try again**): face visible < 80% of the step; fewer than 2 blinks ("We didn't see your blinks…"); median blink depth above 0.45 ("We couldn't see your eyes close clearly…"), where blinks can't be told from glances.
    - **Warns** (saved; **Continue anyway** or **Try again**): only 2 blinks, more than 3, depths more than 0.25 apart, a blink held shut, or the camera below 15 fps.
-5. **Done:** "You're set". **Start using eyeOS** closes the sheet and starts **calibration step 3 (baseline, 60 s) in the background**: the median open-state EAR (`EAR_open_baseline`), `squint_score_baseline`, blink rate and blink duration. The window's dips are rescaled to the new open-eye level and reclassified before counting. The Live header shows "Learning your normal blink rate · Ns" until it finishes, and `calibrated` becomes true. Fewer than 3 blinks, or a camera below 15 fps, is a warning.
+5. **Connect your AI:** the AI coach and screen awareness cards (§12). Optional; **Continue** moves on.
+6. **Allow what you want:** the permissions panel (§12). Optional. Recalibrating skips pages 5 and 6.
+7. **Done:** "You're set". **Start using eyeOS** closes the sheet and starts **calibration step 3 (baseline, 60 s) in the background**: the median open-state EAR (`EAR_open_baseline`), `squint_score_baseline`, blink rate and blink duration. The window's dips are rescaled to the new open-eye level and reclassified before counting. The Live header shows "Learning your normal blink rate · Ns" until it finishes, and `calibrated` becomes true. Fewer than 3 blinks, or a camera below 15 fps, is a warning.
 
-Each calibration step shows a live "Face found" check; **Start** is disabled until a face is visible. The step shows a progress ring while running and advances automatically on `done`. If a step fails (no face for > 50% of the step), the `calibration` message reports `failed` with a reason and the step offers **Try again**. A failed background baseline shows "Baseline failed · retry" in the Live header. Warnings are specific, except in demo mode, where they read "We noticed some unexpected things during calibration that may affect the quality of the calibration. We suggest you try again." The blink check's warnings stay specific even in demo mode, since they say what to do differently ("Blink at your normal speed"). Steps 3 and 4 keep every dip they saw (`t`, `min_o`, `duration`, `kind`) in their `calibration` row, and in the event when step 4 fails, for tuning the thresholds.
+Each calibration step shows a live "Face found" check; **Start** is disabled until a face is visible. The step shows a progress ring while running and advances automatically on `done`. If a step fails (no face for > 50% of the step), the `calibration` message reports `failed` with a reason and the step offers **Try again**. A failed background baseline shows "Baseline failed · retry" in the Live header. Warnings say what went wrong and, for the blink check, what to do differently ("Blink at your normal speed"). Steps 3 and 4 keep every dip they saw (`t`, `min_o`, `duration`, `kind`) in their `calibration` row, and in the event when step 4 fails, for tuning the thresholds.
 
 **Recalibrate** (Settings → Camera, or the Live header pill) opens the same sheet at step 1.
 
@@ -525,19 +526,18 @@ Settings live in the SQLite `settings` table (key → JSON value), owned by Pyth
 | `advanced.real_break_s` | int | 20 | |
 | `audio.voice_id` | str | a Cartesia default voice | |
 | `audio.speed` | number | 1.0 | |
-| `demo.enabled` | bool | false | §12 |
-| `sidecar.repo_path` | path | dev path | Swift-side (UserDefaults) |
+| `sidecar.repo_path` | path | dev path | Swift-side (UserDefaults); dev builds only |
 
 Settings page (one scrolling column of cards):
+0. **Setup:** the setup checklist (§12) and **Run setup again**.
 1. **Camera & calibration:** status, Recalibrate, show-camera toggle, pause tracking.
 2. **Zen mode:** auto-detect toggle, minutes before Zen, Start / End Zen now.
 3. **Agent:** on/off, model, check-in interval, minimum gap between runs, per-trigger cooldown (all in minutes), send images.
-4. **Permissions:** Camera (required), Screen Recording, Accessibility, Automation, each with ✓ or a Grant button that requests and deep-links to the pane.
-5. **Keys & voice:** Cartesia and Anthropic (Keychain), sidecar repo path, Save and restart; Focus Shortcuts check (`shortcuts list` for "eyeOS Focus On/Off"; missing disables `set_focus_mode`).
+4. **Permissions** (in Setup): Camera (required), Screen Recording, Accessibility, Automation, each with ✓ or a Grant button that requests and deep-links to the pane.
+5. **Shortcuts:** sidecar repo path (dev builds only); Focus Shortcuts check (`shortcuts list` for "eyeOS Focus On/Off"; missing disables `set_focus_mode`).
 6. **Quiet apps:** an editable list.
 7. **Memory:** the preferences the agent saved (deletable), **Reset memory…** (confirmed; see `reset_memory`) and the current baseline values.
 8. **Advanced** (collapsed): per-trigger enable / threshold / sustain with reset; the tools table (tier picker, approval state, description) with Reset approvals.
-9. **Demo:** demo mode toggle, Seed history, Wipe seeded data, Run agent now, Run setup again.
 
 ---
 
@@ -743,7 +743,7 @@ When the user is deep in focused work, eyeOS keeps measuring but becomes invisib
 
 **While active:** triggers are evaluated and logged (`details.zen = true`) and counted as `held_back`; the trigger queue is cleared and no run starts. The gate blocks visible tools (§9.2). On entry, any open `ui_request` is dismissed and resolved as no answer.
 
-**Recap:** when a Zen session of ≥ 5 min (demo: 1 min) ends for any reason except `away`, one `zen_recap` banner shows the duration, the average blink rate vs. baseline and how many nudges were held back. If the session was ≥ 20 min or the blink rate fell below 70% of baseline, it offers **Rest eyes 20 s** (an in-card countdown) or **Later**.
+**Recap:** when a Zen session of ≥ 5 min ends for any reason except `away`, one `zen_recap` banner shows the duration, the average blink rate vs. baseline and how many nudges were held back. If the session was ≥ 20 min or the blink rate fell below 70% of baseline, it offers **Rest eyes 20 s** (an in-card countdown) or **Later**.
 
 **Logging:** `events` rows with `kind='zen'`: `zen_start` (details: source) and `zen_end` (value = duration s; details: reason, held_back, blink_rate, longest_stare_s). Zen time feeds the Live page's Today stats and timeline shading.
 
@@ -751,7 +751,7 @@ When the user is deep in focused work, eyeOS keeps measuring but becomes invisib
 
 ## 10. Persistence (SQLite)
 
-File: `~/Library/Application Support/eyeOS/eyeos.db`, in WAL mode, with a single writer thread in Python. Timestamps are unix seconds (REAL). Every table has `seeded INTEGER DEFAULT 0` for demo data.
+File: `~/Library/Application Support/eyeOS/eyeos.db`, in WAL mode, with a single writer thread in Python. Timestamps are unix seconds (REAL). Every table has `seeded INTEGER DEFAULT 0`, a leftover from synthetic history; analysis ignores rows with `seeded=1`.
 
 ```sql
 CREATE TABLE settings     (key TEXT PRIMARY KEY, value TEXT NOT NULL);           -- JSON value
@@ -867,22 +867,30 @@ All overlays are borderless `NSPanel`s at `.screenSaver` or `.floating` level, s
 
 ---
 
-## 12. Demo mode
+## 12. Setup and distribution
 
-Turned on in Settings → Demo.
-- Uses the demo values from §5 for sustain durations, a 10 s trigger cooldown, `agent.global_gap_s=30` and `heartbeat=180`. The Zen recap shows after ≥ 1 min (instead of 5). Lower `zen.enter_min` to demo auto Zen, or start it manually.
-- An eye rub in demo counts after 0.35 s with a fingertip near the eye (and keeps counting for a moment if the hand landmarker drops out) and always starts the palming exercise with voice. The model is not asked. Real detection and real agent runs are unchanged.
-- **Seed history** writes 7 days of synthetic `metrics_1hz` aggregates (at 1/min resolution, to keep it small), events, runs, tool calls and outcomes, and summaries, all with `seeded=1`. Seeded data has a declining blink rate (14 → 7 over the week) and rising incomplete %, so `suggest_seeing_eye_doctor` becomes eligible and the summary has a story.
-- **Wipe seeded data** deletes `WHERE seeded=1`.
-- **Reset approvals** (Settings → Tools) lets the first-use approval flow be shown again.
+**Setup checklist** (`SetupView.swift`): after calibration, first-run setup shows what eyeOS needs beyond the camera; the
+same checklist heads Settings. It rechecks (`setup_check`) whenever eyeOS comes back to the front.
+- **AI coach:** Claude, Codex or an OpenAI-compatible server. Claude is checked with the bundled CLI's
+  `claude auth status --json`; **Sign in with Claude…** runs `claude auth login` in a Terminal window (a `.command`
+  file, so no Automation permission), or the user pastes an Anthropic API key. Codex is checked with `codex login status`.
+  **Test** sends one tiny real request (`test_agent`).
+- **Screen awareness (optional):** two numbered steps: Ollama installed, running (the sidecar starts `ollama serve`) and the vision model
+  pulled. **Download Ollama** opens ollama.com; **Download gemma4** pulls in the background with progress (`pull_model`).
+  **Turn off** sets `privacy.local_vision=false`.
+- **Permissions:** Camera, Screen Recording, Accessibility, Automation, each with what it's for and **Grant**. Status is
+  read without prompting (Automation via `AEDeterminePermissionToAutomateTarget` with `askUserIfNeeded=false`); macOS
+  only asks after a click on Grant, which also opens the System Settings pane when the switch lives there. The app
+  sends the result to the sidecar (`permissions {screen, automation}`), and until then the sidecar takes no
+  screenshots, reads no window titles and doesn't open a camera that hasn't been allowed, so launching eyeOS never
+  pops up permission dialogs.
+- **Voice:** optional Cartesia key.
 
-### Demo script (3 min)
-1. Live page: show the mesh, then blink normally, do a half-blink (the incomplete marker appears on the dip trace), and stare. The stare counter climbs, then a pulse fires.
-2. Rub your eyes. An instant agent run follows (reasoning streams in the Log), an approval panel appears for the exercise, you allow it, and the palming exercise starts with Cartesia voice.
-3. Open a dense article and lean in and squint. The agent sees the screenshot and asks "Switch this article to audio?", then reads the article aloud.
-4. Log page: show the reasoning, the tool calls and an `improved` outcome badge on the blink pulse.
-5. Daily summary, then the (seeded) week view and the doctor-suggestion card wording.
-6. Pitch points: incomplete-blink tracking, verified breaks, and outcome-driven learning.
+**Packaging** (`app/scripts/package_app.sh`): the shared app is self-contained. `Contents/Resources` holds a relocatable
+CPython (python-build-standalone via uv), the sidecar's locked dependencies (including the `claude` CLI bundled with
+claude-agent-sdk), `sidecar/eyeos` and the MediaPipe models. `Sidecar.swift` runs that Python when it's present and
+falls back to `uv run` from the repo otherwise. The script signs ad hoc by default, or with a Developer ID, the
+hardened runtime and `scripts/eyeOS.entitlements`, and can notarize. Output: `build/eyeOS-<version>-<arch>.dmg`.
 
 ---
 
@@ -911,7 +919,7 @@ Turned on in Settings → Demo.
   - 2 yawns
   - 1 real break
 - **Unit tests** cover the pure functions: EAR on a hand-built 6-point set, the distance formula, gaze ratio, the dip state machine on synthetic `o` sequences (a 2-frame dip gives a blink, a 1-frame dip gives noise, a dip with min 0.4 gives incomplete), and the outcome verdict math.
-- The agent and UI are checked manually with the demo script. The gate logic (§9.2) gets a few unit tests because it has security implications: first-use always asks, blocked never executes, and suppression works.
+- The agent and UI are checked manually. The gate logic (§9.2) gets a few unit tests because it has security implications: first-use always asks, blocked never executes, and suppression works.
 
 ---
 
@@ -940,7 +948,7 @@ Turned on in Settings → Demo.
 | M2 | WS server + Swift Live page + menu bar + sidecar supervision | mesh and cards update live, and the camera toggle works |
 | M3 | Triggers + agent loop + must-demo tools + approval gate + Log page | the rub → reasoning → approval → exercise flow works end to end and is logged |
 | M4 | Onboarding + calibration + Settings page + outcomes + daily summary + TTS audio | first run from a clean DB works |
-| M5 | Demo mode + seeding + doctor card + polish + nice-to-have tools | the demo script runs 3× in a row without a hitch |
+| M5 | Doctor card + polish + nice-to-have tools + packaging | a fresh Mac goes from download to a working agent without a terminal |
 
 ---
 

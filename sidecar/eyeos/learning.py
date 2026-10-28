@@ -29,12 +29,12 @@ def _phrase(tool):
     return PHRASE.get(tool, tool.replace("_", " ").capitalize())
 
 
-def derive(db, now=None, suppressed=(), reset_at=0, include_seeded=False):
+def derive(db, now=None, suppressed=(), reset_at=0):
     """key -> rule text, from the last 14 days (or since the user last reset memory, if later)."""
     now = now or time.time()
     since = max(now - WINDOW_S, reset_at)
     rules = {}
-    rules.update(habit_rules(db, since, include_seeded))
+    rules.update(habit_rules(db, since))
 
     # 1. what helps / what rarely helps (outcome verdicts, measured by the camera before vs after)
     stats = {}
@@ -88,15 +88,13 @@ def derive(db, now=None, suppressed=(), reset_at=0, include_seeded=False):
 HABIT_NOUN = {"rub": "eye rubs", "lash_pull": "moments of hands at the lashes"}
 
 
-def habit_rules(db, since, include_seeded=False):
-    """What tends to come before this user's habits (habits.CONDITIONS), so the agent can act before the urge.
-    Seeded demo history counts only in demo mode."""
-    seeded = "" if include_seeded else " AND seeded = 0"
+def habit_rules(db, since):
+    """What tends to come before this user's habits (habits.CONDITIONS), so the agent can act before the urge."""
     baseline = (db.baseline() or {}).get("blink_rate")
     rules, base = {}, None
     for kind, noun in HABIT_NOUN.items():
         contexts = []
-        for r in db.q(f"SELECT details FROM events WHERE kind = ? AND ts > ?{seeded}", (kind, since)):
+        for r in db.q("SELECT details FROM events WHERE kind = ? AND ts > ? AND seeded = 0", (kind, since)):
             try:
                 c = (json.loads(r["details"] or "{}") or {}).get("context")
             except ValueError:
@@ -105,7 +103,7 @@ def habit_rules(db, since, include_seeded=False):
                 contexts.append(c)
         if len(contexts) < MIN_EVIDENCE:
             continue
-        base = base or _base_shares(db, since, baseline, seeded)
+        base = base or _base_shares(db, since, baseline)
         for t in habits.habit_triggers(contexts, base, baseline):
             most = "Most" if t["k"] / t["n"] > 0.5 else "Half"
             rules[f"habit:{kind}:{t['key']}"] = (f"{most} of this user's {noun} ({t['k']} of {t['n']} recently) come "
@@ -113,13 +111,13 @@ def habit_rules(db, since, include_seeded=False):
     return rules
 
 
-def _base_shares(db, since, baseline, seeded):
+def _base_shares(db, since, baseline):
     """Share of face-present screen time each habit condition held, in one pass over metrics_1hz."""
     conds = [(k, sql) for k, _, _, sql, _ in habits.CONDITIONS if k != "low_blink" or baseline]
     cols = ", ".join(f"SUM(CASE WHEN {sql} THEN 1 ELSE 0 END) AS {k}" for k, sql in conds)
     args = [baseline for _, sql in conds if "?" in sql] + [since]  # column placeholders come before the WHERE
     row = db.q(f"SELECT COUNT(*) AS n, {cols} FROM metrics_1hz "
-               f"WHERE ts > ? AND json_extract(data, '$.face_present') = 1{seeded}", args)[0]
+               "WHERE ts > ? AND json_extract(data, '$.face_present') = 1 AND seeded = 0", args)[0]
     return {k: (row[k] or 0) / row["n"] for k, _ in conds} if row["n"] else {}
 
 

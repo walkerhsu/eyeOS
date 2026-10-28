@@ -626,7 +626,7 @@ struct TimelineCard: View {
     }
 }
 
-/// The live openness trace with blink / incomplete markers (key demo visual for incomplete blinks).
+/// The live openness trace with blink / incomplete markers (shows incomplete blinks at a glance).
 struct OpennessChart: View {
     @ObservedObject var feed: LiveFeed
 

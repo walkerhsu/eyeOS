@@ -260,7 +260,6 @@ class Engine:
         self.touch_last = -1e9
         self.touch_pts = deque(maxlen=30)  # that fingertip relative to the eye (IOD) during the current touch
         self.hands_hot_until = 0.0   # a hand was near the eyes: check hands every frame until then (vision.py)
-        self.demo = False            # demo rubs count sooner and can repeat after the 10 s cooldown
         self.yawn_start = None
         self.screen_luma = None
         self.dark_mode = None
@@ -390,8 +389,6 @@ class Engine:
 
         # hands at the eyes (§4.9): hand frames only; face dropout during near doesn't reset. A touch counts only
         # while the eyes are closing (TOUCH); a face hidden behind the hand counts as closing.
-        # Demo only: a shorter near-window, the eyes needn't close, and hand-landmark dropouts (the palm covers the eye)
-        # keep counting for a moment, so a demo rub always emits.
         hands = f.get("hands")
         if hands is not None and self.last_face is not None:
             lf = self.last_face
@@ -406,9 +403,7 @@ class Engine:
             if md < TOUCH["hot_r"] * iod:
                 self.hands_hot_until = t + TOUCH["hot_s"]
             near = md < TOUCH["r"] * iod
-            if self.demo and not hands and self.rub_near and t - self.rub_near[-1][0] <= 0.8:
-                near = True  # fingertips were just on the eye; the hand landmarker lost them
-            closing = self.demo or not present or (self.last.get("o") or 1.0) < TOUCH["closed_o"]
+            closing = not present or (self.last.get("o") or 1.0) < TOUCH["closed_o"]
             self.rubbing = near and closing
             rel = ((tip[0] - eye[0]) * w / iod, (tip[1] - eye[1]) * h / iod) if tip is not None else None
             events += self._touch(t, self.rubbing, rel)
@@ -416,16 +411,14 @@ class Engine:
             if self.rubbing:
                 self.rub_near.append((t, min(t - prev, 0.2) if prev else 0.1))
             _trim(self.rub_near, t - 1.5)
-            need, refractory = (0.35, 10) if self.demo else (0.7, 30)
-            if sum(d for _, d in self.rub_near) >= need and t - self.rub_last >= refractory:
+            if sum(d for _, d in self.rub_near) >= 0.7 and t - self.rub_last >= 30:
                 self.rub_last = t
                 self.rub_near.clear()
-                # pulling at lashes stays put with the eye in view; rubbing sweeps across it; a palm over the face (or a
-                # demo) is a rub
+                # pulling at lashes stays put with the eye in view; rubbing sweeps across it; a palm over the face is a rub
                 pts = self.touch_pts
                 spread = math.hypot(statistics.pstdev(x for x, _ in pts), statistics.pstdev(y for _, y in pts)) \
                     if len(pts) >= 3 else 1.0
-                events.append({"kind": "lash_pull" if spread < TOUCH["lash_spread"] and present and not self.demo
+                events.append({"kind": "lash_pull" if spread < TOUCH["lash_spread"] and present
                                else "rub", "ts": t})
                 pts.clear()
 

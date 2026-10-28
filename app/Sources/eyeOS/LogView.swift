@@ -288,7 +288,6 @@ struct EventCard: View {
         let d = e.obj("details") ?? [:]
         switch e.str("kind") {
         case "trigger": return "Signal crossed its threshold" + (d.bool("zen") ? " · held back during Zen" : "")
-                + (d.bool("demo") ? " · demo" : "")
         case "break": return value.map { "Looked away for \(duration($0))" } ?? "Looked away from the screen"
         case "rub": return "Fingertips stayed near your eyes"
         case "touch": return "Fingers at a closing eye; a soft cue to notice it"

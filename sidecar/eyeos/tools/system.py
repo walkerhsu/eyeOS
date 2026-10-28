@@ -16,6 +16,11 @@ BROWSERS = ("com.apple.Safari", "com.google.Chrome", "company.thebrowser.Browser
 CALL_APPS = ("us.zoom.xos", "com.apple.FaceTime", "com.microsoft.teams2")
 
 
+# Permissions the app has confirmed are already granted. Background work skips anything that would make macOS ask,
+# so prompts only ever come from the app's Grant buttons. A sidecar run from a terminal (no app) leaves these on.
+GRANTED = {"screen": True, "automation": True}
+
+
 def category(bundle_id, title):
     bundle_id, title = bundle_id or "", title or ""
     if bundle_id in CALL_APPS or (bundle_id == "com.tinyspeck.slackmacgap" and "Huddle" in title):
@@ -72,6 +77,8 @@ def frontmost():
 
 def active_app():
     name, bid = frontmost()
+    if not GRANTED["automation"]:  # the window title needs System Events
+        return {"name": name, "bundle_id": bid, "window_title": "", "category": category(bid, "")}
     ok, title = osa(f'tell application "System Events" to tell (first process whose frontmost is true) to get name of front window', 3)
     title = title if ok else ""
     return {"name": name, "bundle_id": bid, "window_title": title, "category": category(bid, title)}
@@ -86,6 +93,8 @@ def time_of_day():
 def screenshot_jpeg(width=1280):
     """Main display screenshot as JPEG bytes, captured straight into memory (never written to disk), or None without
     Screen Recording permission. Returns a bytearray so the caller can wipe it (see wipe())."""
+    if not GRANTED["screen"]:
+        return None
     import Quartz
     import numpy as np
     img = Quartz.CGDisplayCreateImage(Quartz.CGMainDisplayID())

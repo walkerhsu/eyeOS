@@ -14,10 +14,10 @@ from .blur import ramp
 SWAP_OPTION = "Palm 20 s"
 SWAP_TEXT = {"rub": "Itchy eyes? Swap the rub for 20 s of palming: same relief, no pressure.",
              "lash_pull": "Hands at your lashes? Try 20 s of palming instead."}
-OFFER_GAP_S, DEMO_OFFER_GAP_S, MAX_DECLINES = 300, 45, 3
+OFFER_GAP_S, MAX_DECLINES = 300, 3
 
 LEAN = {"close": 0.8, "clear": 0.88,   # x calibrated distance: closer = leaning in; farther = sat back (hysteresis)
-        "start_s": 30, "full_s": 45, "demo_start_s": 3, "demo_full_s": 8, "hold_s": 60}
+        "start_s": 30, "full_s": 45, "hold_s": 60}
 
 ZOOM_OPTION = "Bigger"
 ZOOM = {"squint_s": 5, "gap_s": 600, "auto_after": 2, "apps": ("coding", "reading", "writing")}  # where Cmd+ zooms text
@@ -55,10 +55,9 @@ class HabitCoach:
         """Cue this touch? Not when silenced (Zen, calls, meetings, exercises)."""
         return allowed
 
-    def on_habit(self, t, allowed, demo, day):
+    def on_habit(self, t, allowed, day):
         """A rub or lash pull happened: offer the swap? At most one offer per few minutes, none after 3 noes a day."""
-        gap = DEMO_OFFER_GAP_S if demo else OFFER_GAP_S
-        offer = allowed and t - self.last_offer >= gap and self.declines.get(day, 0) < MAX_DECLINES
+        offer = allowed and t - self.last_offer >= OFFER_GAP_S and self.declines.get(day, 0) < MAX_DECLINES
         if offer:
             self.last_offer = t
         return offer
@@ -75,7 +74,7 @@ class LeanLens:
         self.close_since = None
         self.hold_until = 0.0
 
-    def update(self, t, distance, cal_distance, stale, allowed, demo=False):
+    def update(self, t, distance, cal_distance, stale, allowed):
         if not allowed or not distance or not cal_distance:
             self.close_since = None
             return 0.0
@@ -87,8 +86,7 @@ class LeanLens:
             self.close_since = None
         if self.close_since is None or t < self.hold_until:
             return 0.0
-        start, full = (LEAN["demo_start_s"], LEAN["demo_full_s"]) if demo else (LEAN["start_s"], LEAN["full_s"])
-        return round(ramp(t - self.close_since, start, full), 3)
+        return round(ramp(t - self.close_since, LEAN["start_s"], LEAN["full_s"]), 3)
 
     def close_for(self, t):
         return t - self.close_since if self.close_since else 0.0

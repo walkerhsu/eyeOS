@@ -10,6 +10,27 @@ final class Sidecar {
     }()
 
     var repoPath: String { UserDefaults.standard.string(forKey: "sidecar.repo_path") ?? Self.devRepo }
+
+    /// The packaged app carries its own Python, packages and models (scripts/package_app.sh); dev builds run the repo with uv.
+    static let bundledPython: String? = {
+        guard let res = Bundle.main.resourcePath else { return nil }
+        let py = res + "/python/bin/python3"
+        return FileManager.default.isExecutableFile(atPath: py) ? py : nil
+    }()
+    static var isBundled: Bool { bundledPython != nil }
+
+    /// A downloaded copy that isn't notarized keeps macOS's quarantine flag, which can stop its embedded Python from
+    /// running; one launched straight from the disk image or Downloads runs from a read-only random path instead.
+    static var downloadHint: String {
+        guard isBundled else { return "" }
+        let path = Bundle.main.bundlePath
+        if path.contains("/AppTranslocation/") {
+            return "\n\nMove eyeOS to your Applications folder, then open it from there."
+        }
+        guard getxattr(path, "com.apple.quarantine", nil, 0, 0, 0) >= 0 else { return "" }
+        return "\n\nmacOS may be blocking eyeOS's built-in Python because it came from a download. In Terminal, run:\n"
+            + "    xattr -dr com.apple.quarantine \(shellQuote(path))\nthen quit and reopen eyeOS."
+    }
     var onMessage: (J) -> Void = { _ in }
     var onFrame: (Data) -> Void = { _ in }
     var onConnected: (Bool) -> Void = { _ in }
@@ -36,14 +57,22 @@ final class Sidecar {
         port = Int.random(in: 20000...60000)
         #endif
         token = (0..<32).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
-        guard let uv = Self.find("uv") else {
-            onFatal("Couldn't find `uv`. Install it with `brew install uv`.")
-            return
-        }
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: uv)
-        p.arguments = ["run", "--project", repoPath + "/sidecar", "python", "-m", "eyeos", "--port", "\(port)", "--token", token]
-        p.currentDirectoryURL = URL(fileURLWithPath: repoPath + "/sidecar")
+        let eyeos = ["-m", "eyeos", "--port", "\(port)", "--token", token]
+        if let py = Self.bundledPython {
+            // -s -E: ignore the user's site-packages and PYTHON* variables; -B: the bundle is read-only, write no .pyc
+            p.executableURL = URL(fileURLWithPath: py)
+            p.arguments = ["-s", "-E", "-B"] + eyeos
+            p.currentDirectoryURL = URL(fileURLWithPath: Bundle.main.resourcePath! + "/sidecar")
+        } else {
+            guard let uv = Self.find("uv") else {
+                onFatal("Couldn't find `uv`. Install it with `brew install uv`.")
+                return
+            }
+            p.executableURL = URL(fileURLWithPath: uv)
+            p.arguments = ["run", "--project", repoPath + "/sidecar", "python"] + eyeos
+            p.currentDirectoryURL = URL(fileURLWithPath: repoPath + "/sidecar")
+        }
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = Self.searchPath
         for (k, acct) in [("CARTESIA_API_KEY", "cartesia"), ("ANTHROPIC_API_KEY", "anthropic"), ("CODEX_API_KEY", "codex"),
@@ -68,7 +97,7 @@ final class Sidecar {
             DispatchQueue.main.async { self?.exited(gen) }
         }
         do { try p.run() } catch {
-            onFatal("Failed to start sidecar: \(error.localizedDescription)")
+            onFatal("Failed to start sidecar: \(error.localizedDescription)" + Self.downloadHint)
             return
         }
         proc = p
@@ -80,7 +109,7 @@ final class Sidecar {
         onConnected(false)
         failures = failures.filter { $0.timeIntervalSinceNow > -120 } + [Date()]
         if failures.count >= 3 {
-            onFatal("The sidecar crashed 3 times in 2 minutes.\n\n" + stderrTail.joined(separator: "\n"))
+            onFatal("The sidecar crashed 3 times in 2 minutes." + Self.downloadHint + "\n\n" + stderrTail.joined(separator: "\n"))
             return
         }
         let delay = [1.0, 3.0, 10.0][min(failures.count - 1, 2)]

@@ -5,7 +5,6 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var store: Store
     @StateVar private var newQuiet = ""
-    @StateVar private var cartesia = Keychain.get("cartesia") ?? ""
     @StateVar private var codexModel: String?
     @StateVar private var agentCustom = false   // "Custom endpoint" picked, even if its URL matches a preset
     @StateVar private var visionCustom = false
@@ -27,17 +26,16 @@ struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Settings").font(.system(size: 28, weight: .bold))
+                setupCard
                 cameraCard
                 zenCard
                 habitsCard
                 agentCard
                 privacyCard
-                permissionsCard
                 keysCard
                 quietCard
                 memoryCard
                 advancedCard
-                demoCard
             }
             .padding(20)
             .frame(maxWidth: 820, alignment: .leading)
@@ -46,6 +44,19 @@ struct SettingsView: View {
     }
 
     // MARK: cards
+
+    /// The setup checklist: AI sign-in, the vision model, permissions and voice.
+    var setupCard: some View {
+        SettingsCard(title: "Setup", icon: "checklist", color: .blue, subtitle: "What eyeOS needs beyond the camera") {
+            SetupChecklist()
+            Divider()
+            HStack {
+                Text("Walk through first-run setup and calibration again.").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Run setup again") { store.setupRequest = SetupRequest(recalibrate: false) }
+            }
+        }
+    }
 
     var cameraCard: some View {
         SettingsCard(title: "Camera & calibration", icon: "video.fill", color: .teal) {
@@ -265,28 +276,19 @@ struct SettingsView: View {
         }
     }
 
-    var permissionsCard: some View {
-        SettingsCard(title: "Permissions", icon: "lock.shield.fill", color: .green,
-                     subtitle: "Only the camera is required. The rest unlock optional agent actions.") {
-            PermissionsList()
-        }
-    }
-
     var keysCard: some View {
-        SettingsCard(title: "Keys & voice", icon: "key.fill", color: .orange) {
-            SecureField("Cartesia API key (voice narration)", text: $cartesia).textFieldStyle(.roundedBorder)
-            TextField("Sidecar repo path", text: $repo).textFieldStyle(.roundedBorder)
-            HStack {
-                Text("Agent and vision server keys are under Agent and Privacy.").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("Save and restart sidecar") {
-                    Keychain.set("cartesia", cartesia)
-                    UserDefaults.standard.set(repo, forKey: "sidecar.repo_path")
-                    store.sidecar.restart()
+        SettingsCard(title: "Shortcuts", icon: "square.stack.3d.up.fill", color: .orange) {
+            ShortcutsCheck()
+            if !Sidecar.isBundled {  // dev builds run the sidecar from a checkout
+                Divider()
+                HStack {
+                    TextField("Sidecar repo path", text: $repo).textFieldStyle(.roundedBorder)
+                    Button("Save and restart sidecar") {
+                        UserDefaults.standard.set(repo, forKey: "sidecar.repo_path")
+                        store.sidecar.restart()
+                    }
                 }
             }
-            Divider()
-            ShortcutsCheck()
         }
     }
 
@@ -381,24 +383,6 @@ struct SettingsView: View {
                 }
                 .padding(.top, 6)
             }
-        }
-    }
-
-    var demoCard: some View {
-        SettingsCard(title: "Demo", icon: "play.rectangle.fill", color: .yellow) {
-            SettingRow("Demo mode", detail: "Short sustains and cooldowns") {
-                Toggle("", isOn: bool("demo.enabled")).labelsHidden().toggleStyle(.switch)
-            }
-            HStack {
-                Button("Seed history") { store.sidecar.command("seed_demo"); DispatchQueue.main.asyncAfter(deadline: .now() + 1) { store.loadDay() } }
-                Button("Wipe seeded data") { store.sidecar.command("wipe_demo"); DispatchQueue.main.asyncAfter(deadline: .now() + 1) { store.loadDay() } }
-                Button("Run agent now") { store.sidecar.command("run_agent_now") }
-                Button("Check doctor eligibility") { store.sidecar.command("doctor_eligibility") }
-            }
-            if let d = store.doctor {
-                Text(d.bool("eligible") ? "Eligible" : "Not eligible: \(String(describing: d["detail"] ?? ""))").font(.caption)
-            }
-            Button("Run setup again") { store.setupRequest = SetupRequest(recalibrate: false) }
         }
     }
 }
@@ -555,60 +539,6 @@ struct KeyField: View {
             .disabled(value == saved)
             .help("Saves the key and restarts the sidecar")
         }
-    }
-}
-
-struct PermissionsList: View {
-    @StateVar private var perms: [String: Bool] = [:]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            perm("Camera", "Required", "video.fill", "Privacy_Camera", key: "camera") { AVCaptureDevice.requestAccess(for: .video) { _ in } }
-            perm("Screen Recording", "Screenshots for the agent, screen brightness", "rectangle.dashed.badge.record", "Privacy_ScreenCapture",
-                 key: "screen") { CGRequestScreenCaptureAccess() }
-            perm("Accessibility", "Window and reader-mode actions", "accessibility", "Privacy_Accessibility", key: "ax") {
-                AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
-            }
-            perm("Automation", "Dark mode, reading pages aloud", "gearshape.2", "Privacy_Automation", key: "automation") { _ = automationOK() }
-            HStack {
-                Text("Chrome page reading also needs View › Developer › Allow JavaScript from Apple Events.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("Check again", action: refresh).buttonStyle(.borderless)
-            }
-        }
-        .onAppear(perform: refresh)
-    }
-
-    func perm(_ title: String, _ detail: String, _ icon: String, _ pane: String, key: String, request: @escaping () -> Void) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon).frame(width: 20).foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                Text(detail).font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            if perms[key] == true {
-                Label("Granted", systemImage: "checkmark.circle.fill").foregroundStyle(.mint).font(.callout)
-            } else {
-                Button("Grant") {
-                    request()
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { refresh() }
-                }
-            }
-        }
-    }
-
-    func refresh() {
-        perms = ["camera": AVCaptureDevice.authorizationStatus(for: .video) == .authorized,
-                 "screen": CGPreflightScreenCaptureAccess(), "ax": AXIsProcessTrusted(), "automation": automationOK()]
-    }
-
-    func automationOK() -> Bool {
-        var err: NSDictionary?
-        NSAppleScript(source: "tell application \"System Events\" to get name of first process")?.executeAndReturnError(&err)
-        return err == nil
     }
 }
 

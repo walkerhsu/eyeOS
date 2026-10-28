@@ -51,7 +51,11 @@ class Camera:
         self._cond = threading.Condition()
         self._latest = None
 
-    def open(self):
+    def open(self, prompt=True):
+        """Starts capturing. With prompt=False it won't open a camera the user hasn't allowed yet, since that would
+        make macOS ask; the app asks instead, when the user clicks Get started."""
+        if not prompt and AV.AVCaptureDevice.authorizationStatusForMediaType_(AV.AVMediaTypeVideo) != AV.AVAuthorizationStatusAuthorized:
+            return False
         dev = builtin_device()
         if dev is None:
             print("eyeos: no built-in camera found", file=sys.stderr, flush=True)

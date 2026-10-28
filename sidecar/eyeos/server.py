@@ -16,11 +16,10 @@ from urllib.parse import parse_qs, urlparse
 
 import cv2
 
-from . import demo
 from . import habits as Hb
 from . import tools as T
 from . import openai_compat as OA
-from .agent import DEMO_POSTURE_TRIGGERS, EXERCISES, Agent
+from .agent import EXERCISES, Agent
 from .blur import StareBlur
 from .db import DB, TRIGGERS, validate_setting
 from .metrics import CHECK, Engine, blink_check, blink_thresholds, classify_dip
@@ -48,6 +47,8 @@ class App:
         self.port, self.token = port, token
         self.print_mode, self.replay, self.record = print_mode, replay, record
         self.db = DB(db_path) if db_path else DB()
+        if port:  # started by the app: nothing that needs a permission until the app says it's granted
+            S.GRANTED.update(screen=False, automation=False)
         self.settings = self.db.settings()
         self.lock = threading.Lock()
         self.engine = Engine(cal=self.db.baseline(), adv=self._adv(), today_s=self._today_s())
@@ -121,7 +122,7 @@ class App:
                     self.camera_ok = True
                 else:
                     if cam.cap is None:
-                        self.camera_ok = cam.open()
+                        self.camera_ok = cam.open(prompt=not self.port)  # under the app, only the app asks
                         if not self.camera_ok:
                             cam.release()
                             time.sleep(2)
@@ -134,12 +135,11 @@ class App:
                         continue
                     # every frame while a hand is near the eyes (catch a touch in time), else every 3rd
                     hot = time.time() < self.engine.hands_hot_until
-                    vision.hands_every = 1 if self.settings.get("demo.enabled") or hot else 3
+                    vision.hands_every = 1 if hot else 3
                     f = vision.process(bgr, ts)
                     if rec:
                         rec.write(json.dumps({k: f.get(k) for k in ("ts", "w", "h", "face", "blend", "transform", "hands", "luma", "pose")}) + "\n")
                 with self.lock:
-                    self.engine.demo = bool(self.settings.get("demo.enabled"))
                     events = self.engine.update(f)
                 self.frame = bgr
                 if f["face"] is not None or f["hands"] is not None:
@@ -210,8 +210,7 @@ class App:
 
     def _habit(self, kind):
         s = self.settings
-        if s["habits.rub_coach"] and self.coach.on_habit(time.time(), self._habits_allowed(), s["demo.enabled"],
-                                                          time.strftime("%Y-%m-%d")):
+        if s["habits.rub_coach"] and self.coach.on_habit(time.time(), self._habits_allowed(), time.strftime("%Y-%m-%d")):
             asyncio.ensure_future(self._offer_swap(kind))
         asyncio.ensure_future(self.agent.relearn())
 
@@ -239,15 +238,14 @@ class App:
         allowed = self._habits_allowed() and bool(snap.get("calibrated") and snap.get("face_present"))
         c = self.screen.fresh(300) or {}
         small = c.get("text_size") == "small" or bool(snap.get("squinting"))
-        start = Hb.LEAN["demo_start_s"] if s["demo.enabled"] else Hb.LEAN["start_s"]
-        lean_small = small and self.lens.close_for(now) >= start
+        lean_small = small and self.lens.close_for(now) >= Hb.LEAN["start_s"]
         if s["habits.squint_zoom"] and self.zoom.want(now, self.active.get("bundle_id"), self.active.get("category"),
                                                        snap.get("squint_s"), lean_small, allowed):
             if self.lens.close_for(now):
                 self.lens.hold(now)  # bigger text fixes leaning in at small text better than "sit back"
             asyncio.ensure_future(self._offer_zoom("distance_cm" if lean_small else "squint_delta"))
         return self.lens.update(now, snap.get("distance_cm"), self.engine.cal.get("distance_cm"), snap.get("distance_stale"),
-                                s["habits.lean_lens"] and allowed and not snap.get("talking"), s["demo.enabled"])
+                                s["habits.lean_lens"] and allowed and not snap.get("talking"))
 
     async def _offer_zoom(self, metric):
         """Bigger text instead of squinting or leaning in. Asks until the user has said yes twice in this app."""
@@ -313,7 +311,7 @@ class App:
                 active = (not s["tracking.paused"] and snap["calibrated"] and time.time() - last_face < 120
                           and not self.calibrating)
                 for t in self.triggers.evaluate(snap, events, s, time.time(), active):
-                    t["event_id"] = self.log_event("trigger", t["id"], t["value"], {"demo": s["demo.enabled"], "zen": self.zen.active},
+                    t["event_id"] = self.log_event("trigger", t["id"], t["value"], {"zen": self.zen.active},
                                                    t["fired_at"])
                     if self.zen.active and t["id"] not in ("heartbeat", "break_taken"):
                         self.zen.held_back += 1
@@ -323,10 +321,6 @@ class App:
                 if self.zen.active or self.gym:
                     self.triggers.pending.clear()  # Zen or mid-exercise: keep recording, never wake the agent
                     continue
-                if s["agent.enabled"] and s["demo.enabled"] and set(self.triggers.pending) & DEMO_POSTURE_TRIGGERS:
-                    # demo: leaning in shows the posture card at once, even while the agent is busy
-                    lean = [self.triggers.pending.pop(k) for k in DEMO_POSTURE_TRIGGERS & set(self.triggers.pending)]
-                    asyncio.create_task(self.agent.demo_posture(lean))
                 c = self.screen.fresh(90)
                 interruptible = not c or c.get("interruptibility") is None or c["interruptibility"] >= 0.35
                 if not interruptible and self.triggers.pending and set(self.triggers.pending) != self._held:
@@ -335,10 +329,7 @@ class App:
                                    {"event": "deferred", "triggers": sorted(self._held),
                                     "reason": f"{(c.get('situation') or 'busy').replace('_', ' ')}: {c.get('reason') or ''}".strip(": ")})
                 run = self.triggers.take(time.time(), self.agent.busy, s, interruptible)
-                if (run and s["agent.enabled"] and s["demo.enabled"] and not s["habits.rub_coach"]
-                        and any(t["id"] == "eye_rub" for t in run)):  # with the habit coach on, it offers palming
-                    asyncio.create_task(self.agent.demo_palming(run))  # demo: always the voiced palming exercise
-                elif run and s["agent.enabled"] and self.agent.available():
+                if run and s["agent.enabled"] and self.agent.available():
                     asyncio.create_task(self.agent.run(run))
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
@@ -353,8 +344,7 @@ class App:
                    and not self.agent.quiet()
                    and c.get("content_type") not in ("video", "meeting", "gaming")
                    and c.get("situation") not in ("meeting", "entertainment"))
-        start, full = (4, 10) if s["demo.enabled"] else (s["blur.start_s"], s["blur.full_s"])
-        return self.blur.update(snap.get("current_stare_s"), allowed, start, full, s["blur.strength"])
+        return self.blur.update(snap.get("current_stare_s"), allowed, s["blur.start_s"], s["blur.full_s"], s["blur.strength"])
 
     async def tick_1hz(self):
         n = 0
@@ -477,8 +467,7 @@ class App:
         else:
             info["recap"] = self.zen_stats(info["since"], time.time())
             self.log_event("zen", None, info["duration_s"], {"event": "zen_end", **info})
-            min_s = 20 if self.settings["demo.enabled"] else 60
-            if info["reason"] != "away" and info["duration_s"] >= min_s:
+            if info["reason"] != "away" and info["duration_s"] >= 60:
                 asyncio.create_task(self.zen_recap(info))
         self.today = self.today_stats()
         await self.send_status(force=True)
@@ -742,7 +731,7 @@ class App:
              "paused": self.settings["tracking.paused"], "paused_until": self.paused_until,
              "calibrated": self.snapshot.get("calibrated"), "fps": self.snapshot.get("fps"), "agent_busy": self.agent.busy,
              "frame_w": self.frame.shape[1] if self.frame is not None else None,
-             "frame_h": self.frame.shape[0] if self.frame is not None else None, "demo_mode": self.settings["demo.enabled"],
+             "frame_h": self.frame.shape[0] if self.frame is not None else None,
              "agent_enabled": self.settings["agent.enabled"], "agent_available": self.agent.available(),
              "agent_provider": self.agent.provider(), "agent_clis": self.agent.backends(),
              "has_tts_key": bool(os.environ.get("CARTESIA_API_KEY")), "active_app": self.active, "last_action": self.last_action,
@@ -841,6 +830,12 @@ class App:
             if fut and not fut.done():
                 fut.set_result(m.get("result") if t == "ui_response" else
                                {"ok": m.get("ok", False), "result": m.get("result"), "error": m.get("error")})
+        elif t == "permissions":  # what the app checked (without prompting); see tools.system.GRANTED
+            was = dict(S.GRANTED)
+            S.GRANTED.update({k: bool(m[k]) for k in ("screen", "automation") if k in m})
+            if S.GRANTED["screen"] and not was["screen"]:
+                self.refresh_screen_soon()
+                self.screen.wake.set()
         elif t == "set_setting":
             await self.set_setting(m.get("key"), m.get("value"))
         elif t == "get_settings":
@@ -928,13 +923,6 @@ class App:
             self.db.reset_settings("triggers.")
             self.settings = self.db.settings()
             await self.send({"type": "settings", "settings": self.settings})
-        elif name == "seed_demo":
-            n = demo.seed(self.db)
-            self.log_event("system", None, n, {"event": "seed_demo"})
-            asyncio.create_task(self.agent.relearn())  # seeded habits teach their triggers in demo mode
-        elif name == "wipe_demo":
-            demo.wipe(self.db)
-            self.log_event("system", None, None, {"event": "wipe_demo"})
         elif name == "generate_summary":
             asyncio.create_task(self._summary(args.get("date")))
         elif name == "get_summary":
@@ -959,12 +947,22 @@ class App:
                 await self.send({"type": "error", "code": "agent_unavailable",
                                  "message": "No model is set for the OpenAI-compatible endpoint. Pick one in Settings."
                                  if self.agent.provider() == "openai" else
-                                 f"The {self.agent.provider()} CLI wasn't found. Install it or pick another provider in Settings."})
+                                 f"The {self.agent.provider()} CLI wasn't found. Install it or pick another provider in Settings."
+                                 if not self.agent.backends().get(self.agent.provider()) else
+                                 f"Sign in to {self.agent.provider().capitalize()} first: Settings › Setup."})
             elif not self.agent.busy:
                 # fold in anything queued (e.g. a too_close waiting out the gap) so the manual run sees it
                 queued = list(self.triggers.pending.values())
                 self.triggers.pending.clear()
                 asyncio.create_task(self.agent.run([{"id": "manual", "value": None, "fired_at": time.time()}] + queued))
+        elif name == "setup_check":
+            asyncio.create_task(self._setup_check())
+        elif name == "test_agent":
+            async def go():
+                await self.send({"type": "agent_test", **await self.agent.test()})
+            asyncio.create_task(go())
+        elif name == "pull_model":
+            asyncio.create_task(self._pull_model(args.get("model") or self.settings["privacy.local_model"]))
         elif name == "list_models":
             asyncio.create_task(self._list_models(args.get("role")))
         elif name == "check_shortcuts":
@@ -975,6 +973,44 @@ class App:
             await self.send({"type": "doctor_eligibility", "eligible": ok, "detail": why})
         else:
             await self.send({"type": "error", "code": "unknown_command", "message": f"unknown command {name!r}"})
+
+    async def _setup_check(self):
+        """What the setup checklist shows: is the agent signed in, and is the vision model ready?"""
+        s = self.settings
+        if s["privacy.vision_backend"] == "ollama":
+            vision = await self.screen.ollama_status()
+        else:
+            try:
+                names = await OA.models(s["privacy.vision_base_url"], os.environ.get(OA.VISION_KEY_ENV))
+                vision = {"running": True, "model": s["privacy.local_model"], "has_model": s["privacy.local_model"] in names}
+            except Exception as e:  # noqa: BLE001
+                vision = {"running": False, "model": s["privacy.local_model"], "error": f"{type(e).__name__}: {e}"[:200]}
+        agent = await self.agent.auth()
+        await self.send({"type": "setup", "agent": {**agent, "provider": self.agent.provider()},
+                         "vision": {**vision, "backend": s["privacy.vision_backend"]}})
+
+    _pulling = False
+
+    async def _pull_model(self, model):
+        if self._pulling:
+            return
+        self._pulling = True
+        last = [0.0]
+
+        def progress(m):
+            if time.time() - last[0] < 0.25 and m.get("status") != "success":
+                return
+            last[0] = time.time()
+            self._send_soon({"type": "model_pull", "model": model, "status": m.get("status"),
+                             "completed": m.get("completed"), "total": m.get("total")})
+        try:
+            await self.screen.pull(model, progress)
+            await self.send({"type": "model_pull", "model": model, "status": "success", "done": True})
+        except Exception as e:  # noqa: BLE001
+            await self.send({"type": "model_pull", "model": model, "done": True, "error": f"{e}"[:300] or type(e).__name__})
+        finally:
+            self._pulling = False
+        await self._setup_check()
 
     async def _list_models(self, role):
         """The models the agent's or the vision model's server offers, for the Settings model picker."""
@@ -1075,7 +1111,7 @@ class App:
         self.done = self.loop.create_future()
         self.thread = threading.Thread(target=self.vision_thread, daemon=True)
         self.thread.start()
-        tasks = [self.tick_5hz(), self.tick_1hz(), self.screen.loop(), self.agent.relearn(),
+        tasks = [self.tick_5hz(), self.tick_1hz(), self.screen.loop(), self.agent.relearn(), self.agent.auth(),
                  self.maybe_reflect("launch", delay=90)]  # catch up on the period before a shutdown
         if self.print_mode:
             tasks.append(self.print_loop())

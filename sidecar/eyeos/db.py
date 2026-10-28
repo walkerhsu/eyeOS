@@ -28,24 +28,24 @@ CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_calls_run ON tool_calls(run_id);
 """
 
-# Trigger defaults (§5): id -> (threshold, sustain_s, demo_threshold, demo_sustain_s)
+# Trigger defaults (§5): id -> (threshold, sustain_s)
 TRIGGERS = {
-    "low_blink_rate": (8, 120, 8, 30),
-    "long_stare": (15, 0, 8, 0),
-    "incomplete_blinks": (0.40, 60, 0.40, 20),
-    "drowsy": (0.15, 0, 0.15, 0),
-    "long_blinks": (3, 0, 3, 0),
-    "sustained_squint": (0, 30, 0, 10),
-    "too_close": (40, 20, 40, 4),
-    "eye_rub": (0, 0, 0, 0),
-    "yawning": (2, 0, 1, 0),
-    "dark_room_bright_screen": (0, 60, 0, 15),
-    "no_break": (1200, 0, 120, 0),
-    "frequent_blinks": (25, 120, 22, 30),    # /min floor; fires above max(floor, 1.6 x baseline), not while talking
-    "blink_decline": (0.2, 0, 0.15, 0),      # fraction the blink rate fell over ~12 min (16 -> 14 -> 12 -> 10)
-    "posture_drift": (1, 60, 1, 15),         # posture issues vs the start of the session, sustained
-    "break_taken": (0, 0, 0, 0),
-    "heartbeat": (900, 0, 180, 0),
+    "low_blink_rate": (8, 120),
+    "long_stare": (15, 0),
+    "incomplete_blinks": (0.40, 60),
+    "drowsy": (0.15, 0),
+    "long_blinks": (3, 0),
+    "sustained_squint": (0, 30),
+    "too_close": (40, 20),
+    "eye_rub": (0, 0),
+    "yawning": (2, 0),
+    "dark_room_bright_screen": (0, 60),
+    "no_break": (1200, 0),
+    "frequent_blinks": (25, 120),    # /min floor; fires above max(floor, 1.6 x baseline), not while talking
+    "blink_decline": (0.2, 0),      # fraction the blink rate fell over ~12 min (16 -> 14 -> 12 -> 10)
+    "posture_drift": (1, 60),         # posture issues vs the start of the session, sustained
+    "break_taken": (0, 0),
+    "heartbeat": (900, 0),
 }
 
 # What each fired trigger's value measures, sent to the agent with it (a bare 181 for no_break got read as minutes)
@@ -123,11 +123,10 @@ SETTINGS = {
     "habits.touch_cue": ("glow+sound", lambda v: v in ("glow+sound", "glow", "off")),
     "habits.lean_lens": (True, _bool),              # darken the screen edges while leaning in; clears on sitting back
     "habits.squint_zoom": (True, _bool),            # offer bigger text when squinting; automatic after two yeses per app
-    "demo.enabled": (False, _bool),
     "memory.suppressed": ([], lambda v: isinstance(v, list) and all(_str(x) for x in v)),  # learned keys the user deleted
     "memory.reset_at": (0, _num(0)),  # last "Reset memory": learning and reflection ignore evidence before it
 }
-for _id, (thr, sus, _, _) in TRIGGERS.items():
+for _id, (thr, sus) in TRIGGERS.items():
     SETTINGS[f"triggers.{_id}.enabled"] = (True, _bool)
     SETTINGS[f"triggers.{_id}.threshold"] = (thr, _num())
     SETTINGS[f"triggers.{_id}.sustain_s"] = (sus, _num(0, 3600))

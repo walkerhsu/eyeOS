@@ -10,7 +10,7 @@ eyeOS is for people on screens not by choice, but because their work demands it:
 
 The name is literal. An OS schedules work and manages resources. eyeOS schedules rest, and manages brightness, dark mode, and contrast.
 
-**Contents:** [What it does](#what-it-does) · [Architecture](#architecture) · [Built with](#built-with) · [Run](#run) · [Testing setup](#testing-setup) · [Zen mode](#zen-mode) · [Blink blur](#blink-blur) · [Eye gym](#eye-gym) · [Habit coach](#habit-coach) · [Voice](#voice-cartesia) · [Demo media](#demo-video-and-devpost-media) · [Spec](SPEC.md)
+**Contents:** [What it does](#what-it-does) · [Architecture](#architecture) · [Built with](#built-with) · [Install](#install) · [Build from source](#build-from-source) · [Testing setup](#testing-setup) · [Zen mode](#zen-mode) · [Blink blur](#blink-blur) · [Eye gym](#eye-gym) · [Habit coach](#habit-coach) · [Voice](#voice-cartesia) · [Demo media](#demo-video-and-devpost-media) · [Spec](SPEC.md)
 
 ## What it does
 
@@ -108,14 +108,67 @@ unless you add a Cartesia key.
 | Cloud | Claude Agent SDK on Claude Sonnet 5.5 (Codex CLI or any OpenAI-compatible server also work), Cartesia Sonic 3 for voice |
 | System actions | macOS display settings, Shortcuts for contrast and Focus |
 
-## Run
+## Install
+
+Requires a Mac with Apple Silicon and macOS 14 or later.
+
+1. Download `eyeOS-<version>-arm64.dmg`, open it and drag **eyeOS** into **Applications**.
+2. If this build isn't notarized, clear the download flag once in Terminal, or macOS refuses to open it (or blocks its
+   built-in Python):
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/eyeOS.app
+   ```
+3. Open eyeOS. Setup walks you through the rest, and macOS only asks for a permission when you click **Grant**:
+   - **Camera** (required) and a 20-second calibration.
+   - **Connect your AI** (optional):
+     - **AI coach:** click **Sign in with Claude** to sign in in a Terminal window, or use an Anthropic API key.
+       Codex (your ChatGPT login) or any OpenAI-compatible server works too. **Test** checks it end to end.
+     - **Screen awareness:** step 1, install the free [Ollama](https://ollama.com/download) app; step 2, click
+       **Download**. The model downloads in the background, and eyeOS starts Ollama by itself.
+   - **Allow what you want** (optional): Screen Recording, Accessibility, Automation, each with a **Grant** button.
+   - **Natural voice** (optional, in Settings): a Cartesia key. Without one, eyeOS uses the built-in macOS voice.
+
+Everything after the camera can wait: it all stays at the top of **Settings → Setup**. Without the AI coach eyeOS
+still measures and runs the habit coach; without screen awareness, Zen uses simpler rules.
+
+The app carries everything else it needs: its own Python, MediaPipe models and the `claude` CLI. Your data stays in
+`~/Library/Application Support/eyeOS`.
+
+## Build from source
+
+For development, the app runs the sidecar straight from the repo with uv:
 
 ```sh
 cd sidecar && uv sync && ./scripts/fetch_models.sh   # once
 cd ../app && ./scripts/build_app.sh && open build/eyeOS.app
 ```
 
-The app spawns the Python sidecar (`uv run … python -m eyeos`). The reasoning agent uses your own CLI login: Claude through the Claude Agent SDK (its bundled `claude`, or an Anthropic API key from Settings → Agent), or Codex through `codex exec` (pick in Settings → Agent). The screen agent needs [Ollama](https://ollama.com) with a vision model (`ollama pull gemma4`) and Screen Recording permission for eyeOS. Without them the agent works without a screen description, Zen uses simpler rules, and spoken summaries are unavailable. The Cartesia key is optional: without it, voice uses macOS `say`.
+The app spawns the Python sidecar (`uv run … python -m eyeos`). No Xcode needed: the app is a SwiftPM package wrapped
+into a `.app` by `build_app.sh`.
+
+**Packaging for others.** `app/scripts/package_app.sh` builds the self-contained app and a DMG:
+
+```sh
+cd app && ./scripts/package_app.sh            # → build/eyeOS-0.1.0-arm64.dmg
+EYEOS_VERSION=0.2.0 ./scripts/package_app.sh  # set the version
+```
+
+It embeds a relocatable CPython 3.11 (python-build-standalone, via uv), installs the sidecar's locked dependencies from
+`uv.lock` into it, copies `sidecar/eyeos` and the MediaPipe models, precompiles everything, checks that the sidecar
+imports, then signs and makes the DMG. The app is about 800 MB, and the DMG about 370 MB; the `claude` CLI that ships with claude-agent-sdk
+is the biggest part. It builds for the architecture of the Mac you run it on.
+
+By default the app is signed ad hoc, so people who download it need the `xattr` step above. With an Apple Developer ID
+it is signed with the hardened runtime (`scripts/eyeOS.entitlements`), and with a notarytool profile it is also
+notarized and stapled, so it opens with a double-click:
+
+```sh
+xcrun notarytool store-credentials eyeos --apple-id you@example.com --team-id TEAMID   # once
+SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" NOTARY_PROFILE=eyeos ./scripts/package_app.sh
+```
+
+**Agent providers.** Claude runs through the Claude Agent SDK (its bundled `claude`, signed in with `claude auth login`
+or an Anthropic API key), Codex through `codex exec`. Pick in Settings → Agent.
 
 **OpenAI-compatible servers (local LLMs).** Both the agent and the screen check can use any server that speaks the
 OpenAI Chat Completions API: LM Studio, Ollama's `/v1`, llama.cpp, MLX (`mlx_lm.server`), vLLM, OpenAI, OpenRouter, or
@@ -125,16 +178,18 @@ input. Each role has its own optional API key in the Keychain, so the agent's ke
 With Ollama as the agent server, raise its context (`OLLAMA_CONTEXT_LENGTH=16384`), because its default can be too short
 for the agent's input.
 
-No Xcode needed: the app is a SwiftPM package wrapped into a `.app` by `build_app.sh`.
+First launch opens a short setup: welcome (grants the camera), sit at arm's length (3 s), follow the dot (10 s), blink 3
+times (up to 8 s), then the setup checklist. The 60 s blink baseline then runs in the background; the Live header shows
+its progress.
 
-First launch opens a short setup: welcome (grants the camera), sit at arm's length (3 s), follow the dot (10 s), blink 3 times (up to 8 s). The 60 s blink baseline then runs in the background; the Live header shows its progress. Keys, other permissions and Focus Shortcuts are optional and live in Settings.
-
-Each rebuild re-signs the app ad hoc, so macOS asks once for Keychain access to the saved keys. Click **Always Allow**; until you do, the app waits at launch with no window.
+Each ad-hoc rebuild changes the app's signature, so macOS asks once for Keychain access to any saved keys. Click
+**Always Allow**; until you do, the app waits at launch with no window. Developer ID builds keep the same identity
+across versions and don't ask again.
 
 ## Testing setup
 
 **In the app.** Pick one:
-- Settings → Demo → **Run setup again**: the full flow.
+- Settings → Setup → **Run setup again**: the full flow.
 - Settings → Camera → **Recalibrate**, or the "Not calibrated" pill in the Live header: calibration steps only.
 - As a true first run: `defaults delete dev.eyeos.app onboarded`, then relaunch. Add `tccutil reset Camera dev.eyeos.app` to see the camera prompt again.
 
@@ -155,13 +210,13 @@ After `zen.enter_min` (default 10) minutes of sustained focus, eyeOS goes silent
 
 Automatic Zen ends on a real break, being away, a call or meeting, or three checks in a row without deep focus. Going idle ends it too, unless the conductor still sees deep focus (reading without typing). Without the conductor, switching to a non-work app also ends it. Zen you start by hand lasts until you end it or a call starts.
 
-If Zen lasted at least a minute (20 s in demo mode) and didn't end because you walked away, a recap card lists what happened while eyeOS stayed silent: blink-rate change, eye rubs, time too close to the screen, posture drift, squinting, and how many alerts it held back (with the top three kinds). The same recap appears on the Log page. Start or end Zen by hand from the Live header, the menu bar or Settings. See SPEC §9.11.
+If Zen lasted at least a minute and didn't end because you walked away, a recap card lists what happened while eyeOS stayed silent: blink-rate change, eye rubs, time too close to the screen, posture drift, squinting, and how many alerts it held back (with the top three kinds). The same recap appears on the Log page. Start or end Zen by hand from the Live header, the menu bar or Settings. See SPEC §9.11.
 
 ## Blink blur
 
 Stare at the screen for 8 s without blinking and it slowly goes soft. A full blink clears it at once; a half blink
 only clears half, which teaches full blinks. It's off during Zen, calls, video, quiet apps and exercises. Toggle it and
-set the strength in Settings → Camera. Demo mode starts it at 4 s. The agent can also turn it on, off, up or down
+set the strength in Settings → Camera. The agent can also turn it on, off, up or down
 (`set_blink_blur`, asks you each time unless you set it to auto in Settings → Advanced → Tools). Its effect on blink rate is measured like any other action, so the agent
 learns whether blur helps you. The sidecar computes the level (`blur.py`, sent as
 `blur` in `metrics`); the app draws a click-through frosted pane (`Overlays.swift`).
@@ -222,7 +277,7 @@ then. Voice keeps working: it's how eyeOS coaches you and reads to you while you
 
 **Setup.**
 1. Create an API key at [play.cartesia.ai](https://play.cartesia.ai).
-2. Paste it into Settings → Keys & voice and click **Save and restart sidecar**. The key is kept in the macOS
+2. Paste it into Settings → Setup → Voice and click **Save** (eyeOS restarts its sidecar). The key is kept in the macOS
    Keychain and passed to the sidecar as `CARTESIA_API_KEY`. It is never written to the repo.
 
 Without a key, everything still works using macOS `say`, on-device.

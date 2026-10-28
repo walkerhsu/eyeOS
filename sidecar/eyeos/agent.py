@@ -88,12 +88,6 @@ EXERCISES = {
 KEEP_GOING = {"palming": "Keep your eyes closed and breathe slowly.", "focus_shift": "Hold your focus there.",
               "deliberate_blink": "Keep going: close fully, pause, then open slowly.",
               "gaze_trace": "Stay with the dot."}
-DEMO_PALMING_S = 40  # demo eye-rub response only; the model still chooses in a real session
-DEMO_PALM_TEXT = "You're rubbing your eyes. Let's warm your palms and rest them."
-DEMO_POSTURE_TRIGGERS = {"too_close", "posture_drift"}  # leaning in: demo shows the posture card at once
-DEMO_POSTURE_TEXT = "You're leaning in toward the screen. Sit back to arm's length and let your shoulders drop."
-DEMO_POSTURE_GAP_S = 30  # one card per lean, not one per trigger cooldown
-
 DONE_TEXT = {"palming": "The exercise is done. Open your eyes slowly and blink a few times.",
              "focus_shift": "The exercise is done. Your eyes can relax now.",
              "deliberate_blink": "The exercise is done. You can open your eyes and carry on.",
@@ -136,12 +130,12 @@ class Agent:
         self.app = app
         self.db = app.db
         self.busy = False
-        self.last_demo_posture = -1e9
         self.latencies = []
         self.pending_suggestions = []  # {call_id, tool, ts}
         self.state = {"focus_on": False, "increase_contrast": False}
         self.run_text = {}  # run_id -> latest rationale, shown as the approval reason
         self.codex = Codex(CLIS["codex"])
+        self.signed_in = None  # (provider, ok) from the last auth() check; runs wait while it says no
 
     def provider(self):
         return self.app.settings.get("agent.provider", "claude")
@@ -151,8 +145,7 @@ class Agent:
         try:
             s = self.app.settings
             new = learning.apply(self.db, learning.derive(self.db, suppressed=s.get("memory.suppressed", []),
-                                                          reset_at=s.get("memory.reset_at", 0),
-                                                          include_seeded=bool(s.get("demo.enabled"))))
+                                                          reset_at=s.get("memory.reset_at", 0)))
         except Exception:  # noqa: BLE001 - learning must never break a run
             traceback.print_exc()
             return
@@ -168,7 +161,52 @@ class Agent:
         return {**CLIS, "openai": endpoint}
 
     def available(self):
-        return bool(self.backends().get(self.provider()))
+        return bool(self.backends().get(self.provider())) and self.signed_in != (self.provider(), False)
+
+    async def auth(self):
+        """Is the chosen provider ready to use? A quick local check for the setup checklist; no model call.
+        A clear "not signed in" keeps the agent idle (available() is False) instead of logging a failed run per trigger."""
+        r = await self._auth()
+        if not r.pop("unknown", False):
+            self.signed_in = (self.provider(), r["ok"])
+        return r
+
+    async def _auth(self):
+        p = self.provider()
+        where = self.backends().get(p)
+        if p == "openai":
+            return {"ok": bool(where), "detail": where or "Pick a server and a model"}
+        if not where:
+            return {"ok": False, "installed": False, "detail": f"The {p} CLI wasn't found"}
+        if os.environ.get("ANTHROPIC_API_KEY" if p == "claude" else "CODEX_API_KEY"):
+            return {"ok": True, "installed": True, "detail": "Using your API key"}
+        args = [where, "auth", "status", "--json"] if p == "claude" else [where, "login", "status"]
+        try:
+            proc = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                                                        stderr=asyncio.subprocess.PIPE, cwd=str(Path.home()))
+            out, err = await asyncio.wait_for(proc.communicate(), 30)
+        except (OSError, asyncio.TimeoutError) as e:  # unknown, so runs aren't held back
+            return {"ok": False, "installed": True, "unknown": True, "detail": f"Couldn't check the sign-in: {type(e).__name__}"}
+        if p == "claude":
+            try:
+                j = json.loads(out)
+            except ValueError:
+                j = {}
+            method = {"claude.ai": "your Claude subscription", "console": "your Anthropic Console account"}.get(
+                j.get("authMethod"), j.get("authMethod") or "")
+            return {"ok": bool(j.get("loggedIn")), "installed": True,
+                    "detail": f"Signed in with {method}" if j.get("loggedIn") else "Not signed in"}
+        text = (out or err).decode(errors="replace").strip().splitlines()
+        return {"ok": proc.returncode == 0, "installed": True, "detail": text[-1][:200] if text else ""}
+
+    async def test(self):
+        """One tiny real request, so setup can show that the agent actually answers."""
+        t0 = time.time()
+        try:
+            reply = await asyncio.wait_for(self.complete("This is a connection check. Reply with exactly: OK", "ping"), 120)
+            return {"ok": True, "latency_s": round(time.time() - t0, 1), "reply": reply[:80]}
+        except Exception as e:  # noqa: BLE001 - shown to the user as is
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"[:300] if str(e) else type(e).__name__}
 
     def _endpoint(self):
         s = self.app.settings
@@ -609,72 +647,6 @@ class Agent:
         ok, _ = await S.arun(S.set_focus, False)
         if ok:
             self.state["focus_on"] = False
-
-    async def demo_palming(self, triggers):
-        """Demo only: an eye rub always starts palming with voice. The model is not asked, and approval is skipped
-        so the exercise actually begins. Real sessions still go through run()."""
-        self.busy = True
-        app, db = self.app, self.db
-        t0 = time.time()
-        run_id = db.x("INSERT INTO agent_runs (ts_start, status, triggers) VALUES (?, 'started', ?)",
-                      (t0, json.dumps(triggers)))
-        for tr in triggers:
-            if tr.get("event_id"):
-                db.x("UPDATE events SET run_id=? WHERE id=?", (run_id, tr["event_id"]))
-        self.run_text[run_id] = DEMO_PALM_TEXT
-        await app.send({"type": "agent_run", "run_id": run_id, "ts": t0, "phase": "started", "triggers": triggers})
-        await app.send({"type": "agent_text", "run_id": run_id, "text": DEMO_PALM_TEXT})
-        status, err = "finished", None
-        try:
-            args = {"type": "palming", "duration_s": DEMO_PALMING_S}
-            cid = db.x("""INSERT INTO tool_calls (run_id, ts, name, args, status, tier, approval, result)
-                          VALUES (?, ?, 'start_guided_eye_exercise', ?, 'executing', 'ask', 'demo', ?)""",
-                       (run_id, time.time(), json.dumps(args), f"palming exercise started ({DEMO_PALMING_S} s)"))
-            app.log_event("system", "eye_rub", None, {"event": "exercise", "by": "demo", **args})
-            await app.send({"type": "tool_call", "run_id": run_id, "call_id": cid, "name": "start_guided_eye_exercise",
-                            "args": args, "status": "executing", "tier": "ask", "executor": "swift"})
-            asyncio.create_task(self.evaluate_outcome(cid, "start_guided_eye_exercise", "blink_rate", time.time()))
-            await self._exercise("palming", DEMO_PALMING_S, exercise_steps("palming", DEMO_PALMING_S), cid)
-        except Exception as e:  # noqa: BLE001
-            status, err = "error", f"{type(e).__name__}: {e}"
-            traceback.print_exc()
-        finally:
-            self.busy = False
-        db.x("UPDATE agent_runs SET ts_end=?, status=?, text=?, error=? WHERE id=?",
-             (time.time(), status, DEMO_PALM_TEXT, err, run_id))
-        msg = {"type": "agent_run", "run_id": run_id, "ts": time.time(), "phase": status, "triggers": triggers,
-               "latency_s": round(time.time() - t0, 2)}
-        if err:
-            msg["error"] = err
-        await app.send(msg)
-
-    async def demo_posture(self, triggers):
-        """Demo only: leaning in shows the posture card right away instead of waiting on the model.
-        Real sessions still go through run()."""
-        app, db, t0 = self.app, self.db, time.time()
-        if t0 - self.last_demo_posture < DEMO_POSTURE_GAP_S:
-            return
-        self.last_demo_posture = t0
-        run_id = db.x("INSERT INTO agent_runs (ts_start, status, triggers) VALUES (?, 'started', ?)",
-                      (t0, json.dumps(triggers)))
-        for tr in triggers:
-            if tr.get("event_id"):
-                db.x("UPDATE events SET run_id=? WHERE id=?", (run_id, tr["event_id"]))
-        self.run_text[run_id] = DEMO_POSTURE_TEXT
-        await app.send({"type": "agent_run", "run_id": run_id, "ts": t0, "phase": "started", "triggers": triggers})
-        await app.send({"type": "agent_text", "run_id": run_id, "text": DEMO_POSTURE_TEXT})
-        args = {"message": DEMO_POSTURE_TEXT}
-        asyncio.create_task(app.ui_request("posture_card", {"message": DEMO_POSTURE_TEXT, "duration_s": 12}, 90))
-        cid = db.x("""INSERT INTO tool_calls (run_id, ts, name, args, status, tier, approval, result)
-                      VALUES (?, ?, 'suggest_posture_reset', ?, 'done', 'auto', 'demo', ?)""",
-                   (run_id, time.time(), json.dumps(args), json.dumps("posture card shown")))
-        await app.send({"type": "tool_call", "run_id": run_id, "call_id": cid, "name": "suggest_posture_reset",
-                        "args": args, "status": "done", "result": "posture card shown", "tier": "auto",
-                        "executor": "swift"})
-        asyncio.create_task(self.evaluate_outcome(cid, "suggest_posture_reset", "distance_cm", time.time()))
-        db.x("UPDATE agent_runs SET ts_end=?, status='finished', text=? WHERE id=?", (time.time(), DEMO_POSTURE_TEXT, run_id))
-        await app.send({"type": "agent_run", "run_id": run_id, "ts": time.time(), "phase": "finished",
-                        "triggers": triggers, "latency_s": round(time.time() - t0, 2)})
 
     async def user_exercise(self, kind, duration_s):
         """An exercise the user started from the menu bar or HUD. No approval (the click is consent), but it is

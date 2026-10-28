@@ -104,14 +104,14 @@ def test_coach_cues_touches_unless_silenced():
 
 def test_swap_offers_are_spaced_and_stop_after_three_noes():
     c = Hb.HabitCoach()
-    assert c.on_habit(0, True, False, "d1") is True
-    assert c.on_habit(100, True, False, "d1") is False              # within 5 min
-    assert c.on_habit(50, True, True, "d1") is True                 # demo: 45 s apart
-    assert c.on_habit(10_000, False, False, "d1") is False          # silenced (Zen, call...)
+    assert c.on_habit(0, True, "d1") is True
+    assert c.on_habit(100, True, "d1") is False                     # within 5 min
+    assert c.on_habit(301, True, "d1") is True
+    assert c.on_habit(10_000, False, "d1") is False                 # silenced (Zen, call...)
     for _ in range(3):
         c.answered("Not now", "d1")
-    assert c.on_habit(20_000, True, False, "d1") is False           # three noes today
-    assert c.on_habit(30_000, True, False, "d2") is True            # a new day
+    assert c.on_habit(20_000, True, "d1") is False                  # three noes today
+    assert c.on_habit(30_000, True, "d2") is True                   # a new day
     c.answered(None, "d2")                                          # ignored isn't a no
     assert c.declines.get("d2", 0) == 0
 
@@ -122,7 +122,7 @@ def lens_run(dist_at, seconds=60, **kw):
     lens, out = Hb.LeanLens(), []
     for i in range(seconds * 5):
         t = i / 5
-        out.append(lens.update(t, dist_at(t), 60, kw.get("stale", False), kw.get("allowed", True), kw.get("demo", False)))
+        out.append(lens.update(t, dist_at(t), 60, kw.get("stale", False), kw.get("allowed", True)))
     return lens, out
 
 
@@ -141,7 +141,6 @@ def test_lens_clears_only_once_you_sit_back_past_the_band():
 def test_lens_is_off_when_not_allowed_or_distance_is_stale():
     assert max(lens_run(lambda t: 40, allowed=False)[1]) == 0
     assert max(lens_run(lambda t: 40, stale=True)[1]) == 0
-    assert lens_run(lambda t: 40, seconds=20, demo=True)[1][-1] == 1  # demo: full by 15 s
 
 
 def test_lens_holds_while_bigger_text_gets_a_chance():

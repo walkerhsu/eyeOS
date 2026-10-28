@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 
 from eyeos.agent import Agent
@@ -50,27 +51,6 @@ def call(app, name, args):
     agent.execute = fake_exec
     out = asyncio.run(agent.call_tool(1, "c1", name, args, [{"id": "long_stare"}]))
     return out, executed
-
-
-def test_demo_eye_rub_starts_palming_with_voice(tmp_path):
-    app = FakeApp(tmp_path, {"approved": True})
-    app.log_event = lambda *a, **k: None
-    agent = Agent(app)
-    started = {}
-
-    async def fake_exercise(kind, duration_s, steps, call_id=None):
-        started.update(kind=kind, duration_s=duration_s, first=steps[0]["text"], call_id=call_id)
-
-    async def no_outcome(*_a, **_k):
-        return None
-
-    agent._exercise = fake_exercise
-    agent.evaluate_outcome = no_outcome
-    asyncio.run(agent.demo_palming([{"id": "eye_rub", "value": 1, "fired_at": 1}]))
-    assert started["kind"] == "palming" and started["duration_s"] == 40
-    assert "warm" in started["first"].lower()
-    assert app.asked == [] and agent.busy is False
-    assert any(m.get("type") == "agent_text" and "rubbing" in m["text"] for m in app.sent)
 
 
 def test_first_use_always_asks_even_for_auto_tier(tmp_path):
@@ -126,8 +106,11 @@ def test_doctor_gate_needs_eligibility(tmp_path):
     app = FakeApp(tmp_path, {"approved": True})
     out, ex = call(app, "suggest_seeing_eye_doctor", {"evidence": "x"})
     assert ex == [] and "not eligible" in out
-    from eyeos import demo
-    demo.seed(app.db)
+    import datetime as dt
+    for d in range(1, 5):  # four days of long screen time with a low blink rate
+        ts = (dt.datetime.combine(dt.date.today() - dt.timedelta(days=d), dt.time(12))).timestamp()
+        app.db.x("INSERT INTO metrics_1hz (ts, data) VALUES (?, ?)",
+                 (ts, json.dumps({"screen_time_today_s": 7200, "blink_rate": 6, "incomplete_pct": 0.2})))
     out, ex = call(app, "suggest_seeing_eye_doctor", {"evidence": "x"})
     assert ex == ["suggest_seeing_eye_doctor"]
 
@@ -167,3 +150,23 @@ def test_exercise_narration_reminds_during_long_steps_and_says_done(tmp_path, mo
     assert spoken[0] == "Close your eyes."
     assert any(t.startswith("Keep your eyes closed") and "seconds to go" in t for t in spoken[1:-2])
     assert spoken[-2] == "Open slowly." and spoken[-1].startswith("The exercise is done")
+
+
+def test_agent_waits_for_sign_in_but_not_for_an_unknown_check(tmp_path, monkeypatch):
+    app = FakeApp(tmp_path, None)
+    agent = Agent(app)
+    monkeypatch.setattr(agent, "backends", lambda: {"claude": "/bin/claude"})
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    async def says(result):
+        async def fake():
+            return dict(result)
+        agent._auth = fake
+        return await agent.auth()
+    assert agent.available()  # not checked yet
+    asyncio.run(says({"ok": False, "detail": "Couldn't check the sign-in", "unknown": True}))
+    assert agent.available()
+    out = asyncio.run(says({"ok": False, "detail": "Not signed in"}))
+    assert not agent.available() and "unknown" not in out
+    asyncio.run(says({"ok": True, "detail": "Signed in"}))
+    assert agent.available()
