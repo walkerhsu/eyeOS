@@ -402,14 +402,7 @@ Each fired trigger is written to `events` (§10) and streamed to the UI.
 
 ## 6. WebSocket protocol
 
-Python is the server and Swift is the only client. Text frames carry JSON `{ "type": "...", ...payload }`. Binary frames carry camera images. This section is the source of truth. `protocol.md` mirrors it.
-
-### 6.1 Binary frames (Python → Swift)
-```
-bytes 0..7   : float64 little-endian timestamp (unix seconds)
-bytes 8..    : JPEG (640×480, quality 70)
-```
-These are sent at 15 fps **only when** setting `ui.show_camera_image == true`.
+Python is the server and Swift is the only client. Text frames carry JSON `{ "type": "...", ...payload }`. No camera images or landmarks are sent: the Live page has no camera view. This section is the source of truth. `protocol.md` mirrors it.
 
 ### 6.2 Python → Swift
 
@@ -417,7 +410,7 @@ These are sent at 15 fps **only when** setting `ui.show_camera_image == true`.
 |---|---|---|
 | `hello` | `{version, calibrated, paused, settings}` | on connect |
 | `status` | `{camera_ok, face_present, paused, paused_until, calibrated, fps, agent_busy, has_claude, zen: {active, since, source, held_back, duration_s}, today: {screen_time_s, breaks, rubs, yawns, nudges, zen_s, longest_zen_s, avg_blink_rate, avg_eye_score}}` | on change + 1 Hz (`today` recomputed every 30 s) |
-| `landmarks` | `{ts, face: [[x,y],…478] \| null, hands: [[[x,y],…21],…], iris: {r:[x,y,r], l:[x,y,r]}}` | 15 fps |
+| `openness` | `{ts, o}`: eye openness of the latest frame with a face, for the Live openness trace | 15 fps |
 | `metrics` | snapshot (§4.13) | 5 Hz |
 | `event` | `{id, ts, kind, trigger_id, value, details}` | as they happen |
 | `agent_run` | `{run_id, ts, phase: "started"\|"finished"\|"error", triggers:[…], error?}` | per run |
@@ -504,7 +497,6 @@ Settings live in the SQLite `settings` table (key → JSON value), owned by Pyth
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `ui.show_camera_image` | bool | true | on = Live page shows the camera; off = score-first layout, no JPEG frames sent (§11.1) |
 | `ui.show_hud` | bool | true | ambient floating HUD over other apps (§11.4.1) |
 | `tracking.paused` | bool | false | pause also releases the camera |
 | `agent.enabled` | bool | true | off = metrics/triggers only, no LLM calls |
@@ -787,9 +779,8 @@ General: SwiftUI `NavigationSplitView` with a sidebar (Live, Log, Agent, Setting
 ### 11.1 Live page
 A scrolling dashboard of cards (soft fill, hairline border, rounded 16 pt), with an icon on every tile and section.
 
-- **Header** (both layouts): the title "Live"; status pills for tracking (Tracking · fps / Looking for you / Camera off / Paused), calibration (Learning your normal blink rate · Ns / Not calibrated · set up / Baseline failed · retry) and agent (watching / thinking / silent in Zen / off / unavailable); the **Zen button** (inactive: "Zen"; active: a gradient capsule "Zen · 23m · 3 held", click to end); and the **Camera toggle**, always in the same place.
-- **Camera on** (`ui.show_camera_image`): camera view on the left with the overlay (sparse mesh, eye contours colored by `o`, iris circles, gaze vector, fingertips, head-pose gizmo, plus "Eye rub" / "Squinting" badges), the Today card under it; on the right the eye-score summary and a 2-column tile grid.
-- **Camera off:** a hero card with a large eye-score ring (§4.14), a plain-words label (Eyes relaxed / Mild strain / Eyes working hard / Time to rest), the single biggest issue ("No real break for 32m") and, in Zen, a Zen line; Today stats on the right. Below it, a 4-column tile grid. No camera frames are streamed.
+- **Header:** the title "Live"; status pills for tracking (Tracking · fps / Looking for you / Camera off / Paused), calibration (Learning your normal blink rate · Ns / Not calibrated · set up / Baseline failed · retry) and agent (watching / thinking / silent in Zen / off / unavailable); the **Zen button** (inactive: "Zen"; active: a gradient capsule "Zen · 23m · 3 held", click to end); and the **Camera toggle**, always in the same place.
+- **Layout:** a hero card with a large eye-score ring (§4.14), a plain-words label (Eyes relaxed / Mild strain / Eyes working hard / Time to rest), the single biggest issue ("No real break for 32m") and, in Zen, a Zen line; Today stats on the right. Below it, a 4-column tile grid. No camera frames are streamed.
 - **Tiles** (value + unit, one detail line, status dot; clicking a tile plots it on the timeline):
 
 | Tile | Detail | Green / Amber / Red |
@@ -892,6 +883,12 @@ claude-agent-sdk), `sidecar/eyeos` and the MediaPipe models. `Sidecar.swift` run
 falls back to `uv run` from the repo otherwise. The script signs ad hoc by default, or with a Developer ID, the
 hardened runtime and `scripts/eyeOS.entitlements`, and can notarize. Output: `build/eyeOS-<version>-<arch>.dmg`.
 
+**Agent input without screen awareness:** `screen_activity` is sent only while the latest on-device description is
+recent (≤ 3 check intervals, at least 120 s) and plausible (a real activity of 4–140 characters with a known situation,
+not "unknown" or "a screenshot of…"); implausible answers are dropped at the source. Without one, the context has no
+`screen_activity`, `describe_screen` and `summarize_aloud` aren't offered, and `active_app` carries the front window's
+title (first 200 characters) as the only hint about the task.
+
 ---
 
 ## 13. Testing
@@ -945,7 +942,7 @@ hardened runtime and `scripts/eyeOS.entitlements`, and can notarize. Output: `bu
 |---|---|---|
 | M0 | Spikes R1–R3, R8 | fps measured, accessibility toggle method chosen, TCC attribution verified |
 | M1 | Sidecar vision + metrics + `--print` / `--record` / `--replay` + tests | `pytest` green on the fixture. `--print` shows live metrics. |
-| M2 | WS server + Swift Live page + menu bar + sidecar supervision | mesh and cards update live, and the camera toggle works |
+| M2 | WS server + Swift Live page + menu bar + sidecar supervision | cards update live |
 | M3 | Triggers + agent loop + must-demo tools + approval gate + Log page | the rub → reasoning → approval → exercise flow works end to end and is logged |
 | M4 | Onboarding + calibration + Settings page + outcomes + daily summary + TTS audio | first run from a clean DB works |
 | M5 | Doctor card + polish + nice-to-have tools + packaging | a fresh Mac goes from download to a working agent without a terminal |

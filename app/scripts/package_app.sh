@@ -7,7 +7,7 @@
 #   SIGN_IDENTITY="Developer ID Application: … (TEAM)"   sign with the hardened runtime instead of ad hoc
 #   NOTARY_PROFILE=eyeos                                 also notarize and staple (a `xcrun notarytool store-credentials` profile)
 #
-# Needs: uv, Xcode command line tools. Builds for this Mac's architecture (arm64 on Apple Silicon).
+# Needs: uv (it also fetches dmgbuild for the disk image), Xcode command line tools. Builds for this Mac's architecture (arm64 on Apple Silicon).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 APPDIR=$(pwd)
@@ -73,13 +73,16 @@ fi
 codesign --verify --strict "$APP"
 
 step "Making $DMG"
-STAGE=build/dmg
-rm -rf "$STAGE" "$DMG"
-mkdir -p "$STAGE"
-cp -R "$APP" "$STAGE/"
-ln -s /Applications "$STAGE/Applications"
-hdiutil create -quiet -volname "eyeOS" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
-rm -rf "$STAGE"
+# the window: a background with an arrow onto Applications (dmgbuild lays it out without scripting Finder); builds
+# that won't be notarized also show the one Terminal command people need before the first launch
+NOTE=""
+[ -n "${NOTARY_PROFILE:-}" ] || NOTE="xattr -dr com.apple.quarantine /Applications/eyeOS.app"
+mkdir -p build/dmg-assets
+swift scripts/make_dmg_background.swift build/dmg-assets/background.png 1 "$NOTE"
+swift scripts/make_dmg_background.swift build/dmg-assets/background@2x.png 2 "$NOTE"
+rm -f "$DMG"
+uvx --quiet --from dmgbuild==1.6.7 dmgbuild -s scripts/dmg_settings.py -D app="$APP" \
+  -D background=build/dmg-assets/background.png -D icon=Resources/AppIcon.icns "eyeOS" "$DMG" >/dev/null
 
 if [ -n "${SIGN_IDENTITY:-}" ]; then
   codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG"

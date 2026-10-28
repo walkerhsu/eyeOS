@@ -57,7 +57,7 @@ CATALOG = {
         _obj({"source": {"type": "string", "enum": ["browser_tab", "selection"]}}, ["source"]),
         "action", "ask", True, "py", "gaze_on_screen_pct"),
     "stop_audio": ("Stop any audio eyeOS is playing.", _obj(), "action", "auto", False, "py", None),
-    "get_active_app": ("Get the frontmost app name and category (window titles stay on the Mac).", _obj(), "read", None, False, "py", None),
+    "get_active_app": ("Get the frontmost app name and category, plus its window title when there's no screen description.", _obj(), "read", None, False, "py", None),
     "get_time_of_day": ("Get local time, weekday and whether it is night.", _obj(), "read", None, False, "py", None),
     "describe_screen": (
         "Refresh the on-device description of what is on screen (activity, content type, text size, background). A local "
@@ -137,6 +137,7 @@ CATALOG = {
 }
 
 FIRST_USE_READS = {"get_calendar_events"}
+SCREEN_TOOLS = {"describe_screen", "summarize_aloud"}  # need the on-device screen description (agent.offered)
 SILENT = {n for n, v in CATALOG.items() if not v[4]}
 
 

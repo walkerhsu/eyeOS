@@ -59,7 +59,9 @@ Rules:
   as the user nears their usual no-break stretch.
 - screen_activity is an on-device description of the screen (you never see pixels). Use it to pick actions: e.g. small
   text + leaning in or squinting -> set_text_zoom; long reading -> offer summarize_aloud or switch_to_audio; a much
-  brighter screen than the room -> set_display_brightness down in small steps."""
+  brighter screen than the room -> set_display_brightness down in small steps.
+- Without screen_activity you don't know what is on screen: go by active_app (its name, category and window title) and
+  the eye and posture metrics. Don't guess at the content."""
 
 CAVEATS = ["webcam cannot verify far focus; break = looked away >=20 s",
            "camera auto-exposure makes room_luma approximate",
@@ -275,7 +277,8 @@ class Agent:
     async def _stream(self, model, content, run_id, triggers, acted, max_tools):
         """Provider-neutral run: yields ("thinking", s), ("text", s), ("usage", in, out); raises on failure."""
         call = lambda name, args: self._tool_result(run_id, triggers, acted, name, args)
-        tools = [{"name": n, "description": v[0], "inputSchema": v[1]} for n, v in T.CATALOG.items()]
+        names = self.offered()
+        tools = [{"name": n, "description": T.CATALOG[n][0], "inputSchema": T.CATALOG[n][1]} for n in names]
         if self.provider() == "codex":
             async for ev in self.codex.run(SYSTEM, content, tools, call, model):
                 yield ev
@@ -286,7 +289,7 @@ class Agent:
             async for ev in OA.run(e["base_url"], model, SYSTEM, text, tools, call, e["key"], max_tools):
                 yield ev
             return
-        async for m in self._query(model, content, self._mcp(call), max_tools):
+        async for m in self._query(model, content, self._mcp(call, names), max_tools):
             if isinstance(m, sdk.AssistantMessage):
                 for b in m.content:
                     if isinstance(b, sdk.ThinkingBlock) and b.thinking:
@@ -322,14 +325,14 @@ class Agent:
         return {"content": [{"type": "text", "text": out if isinstance(out, str) else json.dumps(out, default=str)[:20000]}],
                 "isError": isinstance(out, dict) and "error" in out}
 
-    def _mcp(self, call):
-        """One in-process MCP server per Claude run."""
+    def _mcp(self, call, names):
+        """One in-process MCP server per Claude run, with the tools offered to it."""
         def make(name):
             async def handler(args):
                 r = await call(name, args)
                 return {"content": r["content"], "is_error": r.get("isError", False)}
             return sdk.tool(name, T.CATALOG[name][0], T.CATALOG[name][1])(handler)
-        return sdk.create_sdk_mcp_server("eyeos", tools=[make(n) for n in T.CATALOG])
+        return sdk.create_sdk_mcp_server("eyeos", tools=[make(n) for n in names])
 
     async def complete(self, system, text, model=None):
         """Single-shot text completion (no tools), e.g. the daily summary."""
@@ -372,6 +375,7 @@ class Agent:
                     r.pop(k)
                 r["outcome"] = "pending" if meta and meta[6] and r["status"] == "done" else None
         approvals = db.approvals()
+        screen = app.screen.context()
         day0 = dt.datetime.combine(dt.date.today(), dt.time()).timestamp()
         bl = app.engine.cal
         return {
@@ -384,14 +388,13 @@ class Agent:
             "baseline": {"blink_rate": bl.get("blink_rate"), "blink_duration_ms": bl.get("blink_duration_ms"),
                          "ear_open": bl.get("ear_open"), "squint_score": bl.get("squint_score"),
                          "distance_cm": bl.get("distance_cm"), "calibrated": bl.get("calibrated")},
-            # window titles can hold email subjects / document names: they stay on the Mac
-            "active_app": {k: active.get(k) for k in ("name", "bundle_id", "category")},
+            "active_app": self._active_app(active, screen),
             "system_state": {"dark_mode": snap.get("dark_mode"), "focus_on": self.state["focus_on"],
                              "audio_playing": app.speaker.busy(), "increase_contrast": self.state["increase_contrast"],
                              "display_brightness": await asyncio.to_thread(S.get_brightness),
                              "blink_blur": {"enabled": app.settings["blur.enabled"], "strength": app.settings["blur.strength"],
                                             "now": snap.get("blur")}},
-            "screen_activity": app.screen.context(),
+            **({"screen_activity": screen} if screen else {}),
             "typing": app.typing(),
             "preferences": [{"id": p["id"], "rule": p["rule"], "app": p["app"]} for p in db.preferences()],
             "recent_actions": list(reversed(recent)),
@@ -409,6 +412,20 @@ class Agent:
                                     for p in self.pending_suggestions],
             "caveats": CAVEATS,
         }
+
+    @staticmethod
+    def _active_app(active, screen):
+        """The front app. Its window title goes along only when there's no on-device screen description: then it's
+        the one hint about what the user is doing (titles can hold document names, so they're left out otherwise)."""
+        out = {k: active.get(k) for k in ("name", "bundle_id", "category")}
+        if not screen and active.get("window_title"):
+            out["window_title"] = active["window_title"][:200]
+        return out
+
+    def offered(self):
+        """The tools a run may use: the ones that need the screen description only while there is one."""
+        screen = self.app.screen.usable() is not None
+        return [n for n in T.CATALOG if screen or n not in T.SCREEN_TOOLS]
 
     # ---------- gate (§9.2) ----------
 
@@ -578,12 +595,12 @@ class Agent:
             await app.speaker.stop()
             return True, "stopped"
         if name == "get_active_app":
-            return True, {k: app.active.get(k) for k in ("name", "bundle_id", "category")}
+            return True, self._active_app(app.active, app.screen.context())
         if name == "get_time_of_day":
             return True, _now_ctx()
         if name == "describe_screen":
             await app.screen.describe_now()
-            return True, app.screen.context()
+            return True, app.screen.context() or "no usable screen description right now"
         if name == "set_display_brightness":
             cur = await asyncio.to_thread(S.get_brightness)
             if cur is None:

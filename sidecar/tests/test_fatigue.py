@@ -129,16 +129,26 @@ def test_conductor_holds_nudges_but_not_priority_ones(tmp_path):
     assert t.take(3000 + 601, False, s, interruptible=True) is None and not t.pending  # held too long: dropped
 
 
-def pose(nose_y=0.40, ls=(0.62, 0.70), rs=(0.38, 0.70), nose_x=0.50, vis=0.9):
+def pose(nose_y=0.40, ls=(0.62, 0.70), rs=(0.38, 0.70), nose_x=0.50, vis=0.9, ears=True):
     p = [[0.5, 0.5, 0, vis] for _ in range(13)]
     p[0] = [nose_x, nose_y, 0, vis]
+    p[7] = [nose_x + 0.08, nose_y + 0.02, 0, vis if ears else 0.1]  # ears sit a little below the nose, either side
+    p[8] = [nose_x - 0.08, nose_y + 0.02, 0, vis if ears else 0.1]
     p[11] = [ls[0], ls[1], 0, vis]
     p[12] = [rs[0], rs[1], 0, vis]
     return p
 
 
-def drive(e, t0, seconds, p):
-    feat = e._pose_features(p, 640, 480)
+def world(fwd_cm=0.0, shoulders_m=0.36):
+    """World landmarks (metres, y down): ears 20 cm above the shoulders, fwd_cm in front of them."""
+    w = [[0, 0, 0] for _ in range(13)]
+    w[7], w[8] = [0.07, -0.55, -fwd_cm / 100], [-0.07, -0.55, -fwd_cm / 100]
+    w[11], w[12] = [shoulders_m / 2, -0.35, 0], [-shoulders_m / 2, -0.35, 0]
+    return w
+
+
+def drive(e, t0, seconds, p, w=None):
+    feat = e._pose_features(p, 640, 480, w)
     for i in range(seconds * 2):
         e.pose_feat = {**feat, "ts": t0 + i / 2}
         e._posture_sample(t0 + i / 2, 0.0, 0.0, p[0][1])
@@ -168,7 +178,29 @@ def test_calibration_posture_ref_used_before_session_ref():
     e = engine()
     e.session_start, e.distance = 1000, 60
     feat = e._pose_features(pose(), 640, 480)
-    e.cal["posture_ref"] = [0, 0, 0.40, 60, feat["neck"], feat["tilt"], feat["lean"], feat["width"], feat["shoulder_y"]]
+    e.cal["posture_ref"] = [0, 0, 0.40, 60, feat["neck"], feat["tilt"], feat["lean"], feat["width"], feat["shoulder_y"]]  # an older 9-column ref
     drive(e, 1000, 20, pose(nose_y=0.52))            # only 20 s in: no session reference yet
     st = e.posture_state(1020)
     assert st["ready"] and "slumping" in st["issues"]
+
+
+def test_ears_not_nose_so_looking_down_is_not_slumping():
+    e = engine()
+    e.session_start, e.distance = 1000, 60
+    drive(e, 1000, 200, pose())
+    looking_down = pose()
+    looking_down[0] = [0.5, 0.47, 0, 0.9]           # only the nose moves when you glance at the keyboard
+    drive(e, 1200, 40, looking_down)
+    assert "slumping" not in e.posture_state(1240)["issues"]
+
+
+def test_world_landmarks_catch_forward_head_and_rounded_shoulders():
+    e = engine()
+    e.session_start, e.distance = 1000, 60
+    drive(e, 1000, 200, pose(), world())
+    assert e.posture_state(1200)["issues"] == []
+    drive(e, 1200, 40, pose(), world(fwd_cm=8))      # ears 8 cm in front of the shoulders: ~22 degrees
+    st = e.posture_state(1240)
+    assert "head_forward" in st["issues"] and st["delta"]["head_forward_deg"] > 10
+    drive(e, 1300, 40, pose(), world(shoulders_m=0.30))
+    assert "shoulders_rounded" in e.posture_state(1340)["issues"]

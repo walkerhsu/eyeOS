@@ -1,11 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// High-rate camera state (15 Hz), kept apart from Store so the charts and tiles don't redraw on every frame.
+/// High-rate eye openness (15 Hz), kept apart from Store so the charts and tiles don't redraw on every frame.
 @MainActor
 final class LiveFeed: ObservableObject {
-    @Published var landmarks: J?
-    @Published var frame: NSImage?
     @Published var trace: [(ts: Double, o: Double)] = []          // last 60 s of openness
     @Published var dipMarks: [(ts: Double, kind: String, o: Double)] = []
 }
@@ -65,10 +63,6 @@ final class Store: ObservableObject {
 
     private init() {
         sidecar.onMessage = { [weak self] m in self?.handle(m) }
-        sidecar.onFrame = { [weak self] d in
-            guard let self, self.setting("ui.show_camera_image") else { return }
-            self.feed.frame = NSImage(data: d)
-        }
         sidecar.onConnected = { [weak self] ok in
             guard let self else { return }
             self.connected = ok
@@ -119,8 +113,7 @@ final class Store: ObservableObject {
             overlays.updateLean(m.num("lean") ?? 0)
         case "habit_cue": overlays.habitCue(m.str("style") ?? "glow")
         case "exercise_progress": exercise.p = m
-        case "landmarks":
-            feed.landmarks = m
+        case "openness":
             if let ts = m.num("ts") {
                 if let o = m.num("o") { feed.trace.append((ts, o)) }
                 feed.trace.removeAll { $0.ts < ts - 60 }

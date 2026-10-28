@@ -45,6 +45,9 @@ DEFAULT_CAL = {"ear_open": 0.28, "squint_score": 0.0, "w_px_cal": None, "distanc
                "blink_rate": None, "blink_duration_ms": None, "calibrated": False}
 
 
+# upper-body columns of each posture row, after (pitch, roll, nose_y, distance); see Engine._pose_features
+POSE_COLS = ("neck", "tilt", "lean", "width", "shoulder_y", "head_fwd", "shoulders_m")
+
 # ---------- pure functions ----------
 
 def dist(a, b, w=1.0, h=1.0):
@@ -382,7 +385,7 @@ class Engine:
                 self.yawn_start = None
 
             if f.get("pose") is not None:
-                pf = self._pose_features(f["pose"], w, h)
+                pf = self._pose_features(f["pose"], w, h, f.get("pose_world"))
                 self.pose_feat = {**pf, "ts": t} if pf else None
             self.last.update(o=o, ear=e, gx=gx, gy=gy, yaw=yaw, pitch=pitch, roll=roll)
             self._posture_sample(t, pitch, roll, face[1][1])
@@ -510,31 +513,44 @@ class Engine:
                 "blink_duration_change": None if dur_change is None else round(dur_change, 3), "ready": True,
                 "declining": drop >= 0.2 and start - end >= 3 and slope < -0.2 and steady >= 0.7}
 
-    def _pose_features(self, pose, w, h):
+    def _pose_features(self, pose, w, h, world=None):
         """Upper-body geometry from MediaPipe Pose (front camera), or None when the shoulders aren't visible.
 
-        neck: nose height above the shoulder line / shoulder width (shrinks when slumping or shrugging)
-        tilt: shoulder-line angle in degrees; lean: nose offset from the shoulder midpoint / shoulder width
+        The head is the midpoint of the ears when both are visible (they stay put when you just look down, unlike the
+        nose), else the nose.
+        neck: head height above the shoulder line / shoulder width (shrinks when slumping or shrugging)
+        tilt: shoulder-line angle in degrees; lean: head offset from the shoulder midpoint / shoulder width
         width: shoulder width / frame width (grows when leaning in); shoulder_y: shoulder midpoint height (0-1)
+        From the 3-D world landmarks, when the ears are visible:
+        head_fwd: degrees the ears sit in front of the shoulders, seen from the side (grows with forward-head posture)
+        shoulders_m: shoulder width in metres (shrinks as the shoulders round forward; unaffected by distance)
         """
         if not pose or len(pose) < 13 or min(pose[11][3], pose[12][3]) < 0.6:
             return None
-        ls, rs, nose = pose[11], pose[12], pose[0]
+        ls, rs = pose[11], pose[12]
         sw = math.hypot((ls[0] - rs[0]) * w, (ls[1] - rs[1]) * h)
         if sw < 1:
             return None
+        ears = min(pose[7][3], pose[8][3]) >= 0.5
+        hx, hy = ((pose[7][0] + pose[8][0]) / 2, (pose[7][1] + pose[8][1]) / 2) if ears else (pose[0][0], pose[0][1])
         mx, my = (ls[0] + rs[0]) / 2, (ls[1] + rs[1]) / 2
         tilt = math.degrees(math.atan2((ls[1] - rs[1]) * h, abs(ls[0] - rs[0]) * w))
-        return {"neck": (my - nose[1]) * h / sw, "tilt": tilt, "lean": (nose[0] - mx) * w / sw,
-                "width": sw / w, "shoulder_y": my}
+        out = {"neck": (my - hy) * h / sw, "tilt": tilt, "lean": (hx - mx) * w / sw, "width": sw / w, "shoulder_y": my,
+               "head_fwd": None, "shoulders_m": None}
+        if world and len(world) >= 13 and ears:
+            mid = lambda a, b: [(a[i] + b[i]) / 2 for i in range(3)]  # noqa: E731
+            ear, sh = mid(world[7], world[8]), mid(world[11], world[12])
+            if sh[1] - ear[1] > 0.02:  # ears above the shoulders, as when sitting
+                out["head_fwd"] = math.degrees(math.atan2(sh[2] - ear[2], sh[1] - ear[1]))
+            out["shoulders_m"] = math.dist(world[11], world[12])
+        return out
 
     def _posture_sample(self, t, pitch, roll, nose_y):
         if self.posture_session != self.session_start:  # new sitting: learn a fresh reference posture
             self.posture_session, self.posture_ref, self.posture_ref_samples = self.session_start, None, []
             self.posture_off_since = None
         p = self.pose_feat if self.pose_feat and t - self.pose_feat["ts"] < 1.0 else {}
-        row = (t, pitch, roll, nose_y, self.distance,
-               p.get("neck"), p.get("tilt"), p.get("lean"), p.get("width"), p.get("shoulder_y"))
+        row = (t, pitch, roll, nose_y, self.distance, *(p.get(k) for k in POSE_COLS))
         self.posture.append(row)
         _trim(self.posture, t - 30)
         if self.posture_ref is None:
@@ -555,12 +571,15 @@ class Engine:
 
     def posture_state(self, t):
         """How your posture has drifted from the start of this session (or, until that's learned, from calibration)."""
+        n = 4 + len(POSE_COLS)
         cal_ref = self.cal.get("posture_ref")
-        ref = self.posture_ref or (tuple(cal_ref) if cal_ref and len(cal_ref) == 9 else None)
+        if cal_ref and len(cal_ref) < n:  # saved before the 3-D columns existed
+            cal_ref = list(cal_ref) + [None] * (n - len(cal_ref))
+        ref = self.posture_ref or (tuple(cal_ref) if cal_ref and len(cal_ref) == n else None)
         if ref is None or len(self.posture) < 30:
             return {"ready": False, "issues": [], "off_s": 0}
-        pitch, roll, y, d, neck, tilt, lean, width, sy = self._medians(self.posture)
-        rp, rr, ry, rd, rneck, rtilt, rlean, rwidth, rsy = ref
+        pitch, roll, y, d, neck, tilt, lean, width, sy, fwd, shm = self._medians(self.posture)
+        rp, rr, ry, rd, rneck, rtilt, rlean, rwidth, rsy, rfwd, rshm = ref
         both = lambda a, b: a is not None and b is not None  # noqa: E731
         issues = []
         if both(neck, rneck) and rneck > 0:  # shoulders visible: real upper-body geometry
@@ -573,6 +592,10 @@ class Engine:
                 issues.append("leaning_sideways")
             if both(width, rwidth) and width > 1.15 * rwidth:
                 issues.append("leaning_in")
+            if both(fwd, rfwd) and fwd - rfwd > 10:
+                issues.append("head_forward")       # the ears moved out in front of the shoulders
+            if both(shm, rshm) and rshm > 0 and shm < 0.9 * rshm:
+                issues.append("shoulders_rounded")  # the shoulders rolled forward and in
         elif both(y, ry) and y - ry > 0.06:
             issues.append("slumping")       # face only: head sits lower in the frame than when you started
         if both(pitch, rp) and pitch - rp < -12:
@@ -592,6 +615,8 @@ class Engine:
                           "neck_ratio": _r(neck / rneck if both(neck, rneck) and rneck else None, 2),
                           "shoulder_tilt_deg": _r(tilt - rtilt if both(tilt, rtilt) else None, 1),
                           "lean": _r(lean - rlean if both(lean, rlean) else None, 2),
+                          "head_forward_deg": _r(fwd - rfwd if both(fwd, rfwd) else None, 1),
+                          "shoulder_width_ratio": _r(shm / rshm if both(shm, rshm) and rshm else None, 2),
                           "distance_ratio": _r(d / rd if d and rd else None, 2)}}
 
     def _touch(self, t, touching, rel):

@@ -50,6 +50,11 @@ reason (<=15 words: why this situation and interruptibility)
 Metrics and previous check:
 """
 
+SITUATIONS = ("deep_work", "meeting", "reading", "casual", "entertainment", "idle")
+CONTENT_TYPES = ("coding", "reading", "writing", "video", "design", "chat", "meeting", "spreadsheet", "browsing", "gaming", "other")
+# answers that describe the screenshot or the model itself rather than what the user is doing
+NONSENSE = ("unknown", "n/a", "none", "screenshot", "image", "cannot", "can't", "unable", "blank", "black screen", "as an ai")
+
 KEYS = ("activity", "content_type", "situation", "focus", "interruptibility", "text_size", "background",
         "long_reading", "voice_task", "reason")
 
@@ -90,7 +95,21 @@ def _normalize(d):
         d["interruptibility"] = None
     if d["focus"] not in ("deep", "light", "none"):
         d["focus"] = None
+    if d["situation"] not in SITUATIONS:
+        d["situation"] = None
+    if d["content_type"] not in CONTENT_TYPES:
+        d["content_type"] = None
     return d
+
+
+def plausible(d):
+    """Is this a real description of what the user is doing? A small model that couldn't read the screen tends to
+    answer with an empty or generic activity ("a screenshot", "unknown"); those never reach the agent."""
+    a = d.get("activity")
+    if not isinstance(a, str) or not 4 <= len(a.strip()) <= 140 or d.get("situation") is None:
+        return False
+    low = a.lower()
+    return not any(w in low for w in NONSENSE)
 
 
 class ScreenWatch:
@@ -129,13 +148,23 @@ class ScreenWatch:
                 "interruptibility": d.get("interruptibility"), "reason": d.get("reason"),
                 "age_s": round(time.time() - d["ts"]) if d else None}
 
+    def usable(self):
+        """The latest description if screen awareness is on, its last check worked and it's recent; else None."""
+        s = self.settings()
+        if not s["privacy.local_vision"] or not self.ok:
+            return None
+        return self.fresh(max(120, 3 * s["privacy.screen_interval_s"]))
+
     def context(self):
-        """What the cloud agent gets: text only."""
-        if not self.latest:
-            return {"available": False, "note": self.error or "no on-device screen description yet"}
-        return {"available": True, "age_s": round(time.time() - self.latest["ts"]),
-                **{k: self.latest.get(k) for k in KEYS},
-                "recent": [{"activity": h["activity"], "situation": h["situation"]} for h in list(self.history)[:-1][-5:]],
+        """What the cloud agent gets: text only, and nothing at all unless there's a usable description, so the
+        agent never reasons over an empty, stale or made-up one."""
+        d = self.usable()
+        if not d:
+            return None
+        now = time.time()
+        return {"age_s": round(now - d["ts"]), **{k: d.get(k) for k in KEYS},
+                "recent": [{"activity": h["activity"], "situation": h["situation"]} for h in list(self.history)[:-1][-5:]
+                           if now - h["ts"] <= 600],
                 "privacy": "described on-device by a local model; screen pixels were not sent to you"}
 
     async def ensure_server(self):
@@ -227,6 +256,9 @@ class ScreenWatch:
             info = json.dumps({"metrics": self.metrics(), "previous_check": prev}, default=str)
             raw = await self.ask(PROMPT + info, [base64.b64encode(shot).decode()])
             d = _normalize(_parse(raw))
+            if not plausible(d):
+                self.ok, self.error = False, "the vision model's answer didn't describe the screen, so it was ignored"
+                return None
             d["ts"] = time.time()
             self.latest = d
             self.history.append(d)

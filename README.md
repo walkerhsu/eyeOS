@@ -38,7 +38,7 @@ Every Claude action passes a code-enforced approval check: each kind of action t
 
 ![The Log tab: drag across the day to see what happened, when, and why](docs/images/log-tab.png)
 
-The **Live** page shows what the camera tracks and your eye score. The **Agent** page lists every decision with its reasoning, its actions, and how often each fix helped. The **Log** lets you rewind your day. A menu bar popover and a small floating HUD, which brightens only when something drifts, keep eyeOS in view from any app.
+The **Live** page shows your eye score and what's behind it (no camera image). The **Agent** page lists every decision with its reasoning, its actions, and how often each fix helped. The **Log** lets you rewind your day. A menu bar popover and a small floating HUD, which brightens only when something drifts, keep eyeOS in view from any app.
 
 ![The daily summary and a week of eye scores](docs/images/daily-report.png)
 
@@ -46,7 +46,7 @@ The **Live** page shows what the camera tracks and your eye score. The **Agent**
 
 ![What stays on your Mac and what reaches the cloud](docs/images/privacy.png)
 
-Camera frames never leave the Mac. Screenshots go only to the vision model (on your Mac unless you pick a hosted one), then are wiped. Claude gets numbers, the app name, a short screen description, and your rules: no images, window titles, or page text. Calendar event titles are shared only if you approve calendar access. Details are under [Architecture](#architecture).
+Camera frames never leave the Mac. Screenshots go only to the vision model (on your Mac unless you pick a hosted one), then are wiped. Claude gets numbers, the app name, a short screen description, and your rules: no images or page text. Without a screen description it gets the front window's title instead, and nothing about the screen. Calendar event titles are shared only if you approve calendar access. Details are under [Architecture](#architecture).
 
 *The screenshots above are rendered from [`video/`](video/) and show illustrative data.*
 
@@ -95,8 +95,9 @@ flowchart TB
 **Privacy.** Camera frames never leave the Mac. Screenshots are captured into memory, never written to disk, shown
 only to the vision model, and wiped after each check. If you point vision at an OpenAI-compatible server that isn't on this
 Mac, Settings warns that screenshots leave the Mac; spoken summaries use the same server, so page text goes there too.
-The cloud model gets numbers, the app name, the conductor's short text and memory rules: no images, window titles or
-page text. If you approve the calendar tool, it also sees the titles of your next few events. Voice uses macOS `say`
+The cloud model gets numbers, the app name, the conductor's short text and memory rules: no images or page text. The
+conductor's text goes along only while it is recent and actually describes the screen; otherwise the agent gets the front
+window's title instead (when Automation is allowed) and no screen field or screen tools at all. If you approve the calendar tool, it also sees the titles of your next few events. Voice uses macOS `say`
 unless you add a Cartesia key.
 
 ## Built with

@@ -48,8 +48,10 @@ class Vision:
             f["hands"] = [[[p.x, p.y, p.z] for p in hand] for hand in hr.hand_landmarks]
         if self.pose and self.n % self.pose_every == 1:
             pr = self.pose.detect_for_video(img, ms)
-            # upper body only (0 nose .. 12 right shoulder): x, y, z, visibility
+            # upper body only (0 nose .. 12 right shoulder): x, y, z, visibility; plus the same points in metres (world
+            # coordinates, y down, z toward the camera negative), which show how far the head sits in front of the shoulders
             f["pose"] = [[p.x, p.y, p.z, p.visibility] for p in pr.pose_landmarks[0][:13]] if pr.pose_landmarks else []
+            f["pose_world"] = [[p.x, p.y, p.z] for p in pr.pose_world_landmarks[0][:13]] if pr.pose_world_landmarks else None
         if self.n % self.luma_every == 0:
             f["luma"] = float(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).mean())
         self.n += 1

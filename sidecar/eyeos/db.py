@@ -83,7 +83,6 @@ _model = lambda v: isinstance(v, str) and len(v) < 200
 
 # key -> (default, validator)
 SETTINGS = {
-    "ui.show_camera_image": (True, _bool),
     "ui.show_hud": (True, _bool),                   # ambient floating HUD over other apps
     "tracking.paused": (False, _bool),
     "agent.enabled": (True, _bool),

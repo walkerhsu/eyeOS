@@ -32,7 +32,6 @@ final class Sidecar {
             + "    xattr -dr com.apple.quarantine \(shellQuote(path))\nthen quit and reopen eyeOS."
     }
     var onMessage: (J) -> Void = { _ in }
-    var onFrame: (Data) -> Void = { _ in }
     var onConnected: (Bool) -> Void = { _ in }
     var onFatal: (String) -> Void = { _ in }
 
@@ -137,8 +136,8 @@ final class Sidecar {
                             if j.str("type") == "hello" { self.onConnected(true) }
                             self.onMessage(j)
                         }
-                    case .data(let d):
-                        if d.count > 8 { self.onFrame(d.subdata(in: 8..<d.count)) }
+                    case .data:
+                        break
                     @unknown default: break
                     }
                     self.receive(task, gen: gen, attempt: 0)

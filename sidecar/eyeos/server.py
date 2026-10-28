@@ -6,7 +6,6 @@ import gzip
 import json
 import os
 import statistics
-import struct
 import sys
 import threading
 import time
@@ -14,7 +13,6 @@ import traceback
 import uuid
 from urllib.parse import parse_qs, urlparse
 
-import cv2
 
 from . import habits as Hb
 from . import tools as T
@@ -74,8 +72,7 @@ class App:
         self.last_action = None
         self.paused_until = None   # set by a timed pause
         self.resume_timer = None
-        self.frame = None          # latest unmirrored BGR frame
-        self.landmarks = None
+        self.openness = None       # (ts, eye openness) of the latest frame with a face, for the Live trace
         self.camera_ok = False
         self.stop = threading.Event()
         self.last_status = None
@@ -138,17 +135,11 @@ class App:
                     vision.hands_every = 1 if hot else 3
                     f = vision.process(bgr, ts)
                     if rec:
-                        rec.write(json.dumps({k: f.get(k) for k in ("ts", "w", "h", "face", "blend", "transform", "hands", "luma", "pose")}) + "\n")
+                        rec.write(json.dumps({k: f.get(k) for k in ("ts", "w", "h", "face", "blend", "transform", "hands", "luma", "pose", "pose_world")}) + "\n")
                 with self.lock:
                     events = self.engine.update(f)
-                self.frame = bgr
-                if f["face"] is not None or f["hands"] is not None:
-                    self.landmarks = {"face": f["face"] if f["face"] is not None else None,
-                                      "hands": f["hands"] if f["hands"] is not None else (self.landmarks or {}).get("hands", []),
-                                      "pose": f["pose"] if f.get("pose") is not None else (self.landmarks or {}).get("pose"),
-                                      "ts": f["ts"], "o": self.engine.last.get("o") if f["face"] is not None else None}
-                if f["face"] is None and self.landmarks:
-                    self.landmarks["face"] = None
+                if f["face"] is not None:
+                    self.openness = (f["ts"], self.engine.last.get("o"))
                 if events and self.loop:
                     self.loop.call_soon_threadsafe(self.on_events, events)
         except Exception:  # noqa: BLE001
@@ -425,14 +416,6 @@ class App:
                         "gaze_on_screen_pct": round(sum(1 for r in rows if r.get("gaze_on_screen")) / len(rows), 2),
                         "app_category": cats.most_common(1)[0][0]})
         return out
-
-    def webcam_jpeg(self, width=512):
-        f = self.frame
-        if f is None:
-            return None
-        h, w = f.shape[:2]
-        img = cv2.resize(f, (width, int(h * width / w)))
-        return cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 70])[1].tobytes()
 
     def update_baseline(self, reason):
         trig_ts = [r["ts"] for r in self.db.q("SELECT ts FROM events WHERE kind='trigger' AND ts > ?", (time.time() - 1800,))]
@@ -730,8 +713,6 @@ class App:
         s = {"camera_ok": self.camera_ok, "face_present": self.snapshot.get("face_present"),
              "paused": self.settings["tracking.paused"], "paused_until": self.paused_until,
              "calibrated": self.snapshot.get("calibrated"), "fps": self.snapshot.get("fps"), "agent_busy": self.agent.busy,
-             "frame_w": self.frame.shape[1] if self.frame is not None else None,
-             "frame_h": self.frame.shape[0] if self.frame is not None else None,
              "agent_enabled": self.settings["agent.enabled"], "agent_available": self.agent.available(),
              "agent_provider": self.agent.provider(), "agent_clis": self.agent.backends(),
              "has_tts_key": bool(os.environ.get("CARTESIA_API_KEY")), "active_app": self.active, "last_action": self.last_action,
@@ -1065,28 +1046,16 @@ class App:
             return await self.send({"type": "error", "code": "bad_history", "message": f"unknown history kind {kind!r}"})
         await self.send({"type": "history", "request_id": m.get("request_id"), "kind": kind, "rows": rows})
 
-    async def stream_frames(self):
+    async def stream_openness(self):
+        """Eye openness at 15 Hz for the Live page's openness trace. No camera images or landmarks leave the sidecar."""
         last_ts = None
         while True:
             await asyncio.sleep(1 / 15)
-            if self.ws is None:
+            o = self.openness
+            if self.ws is None or not o or o[0] == last_ts:
                 continue
-            lm = self.landmarks
-            if lm and lm.get("ts") != last_ts:
-                last_ts = lm.get("ts")
-                face = lm.get("face")
-                msg = {"type": "landmarks", "ts": lm["ts"], "o": lm.get("o"), "face": [[round(p[0], 4), round(p[1], 4)] for p in face] if face else None,
-                       "hands": [[[round(p[0], 4), round(p[1], 4)] for p in h] for h in lm.get("hands") or []]}
-                if face:
-                    msg["iris"] = {e: [round(face[c][0], 4), round(face[c][1], 4), round(abs(face[a][0] - face[b][0]) / 2, 4)]
-                                   for e, c, a, b in (("r", 468, 469, 471), ("l", 473, 474, 476))}
-                await self.send(msg)
-            if self.settings["ui.show_camera_image"] and self.frame is not None and not self.settings["tracking.paused"]:
-                jpg = cv2.imencode(".jpg", self.frame, [cv2.IMWRITE_JPEG_QUALITY, 70])[1].tobytes()
-                try:
-                    await self.ws.send(struct.pack("<d", time.time()) + jpg)
-                except Exception:  # noqa: BLE001
-                    pass
+            last_ts = o[0]
+            await self.send({"type": "openness", "ts": o[0], "o": o[1]})
 
     async def print_loop(self):
         while True:
@@ -1126,7 +1095,7 @@ class App:
             import websockets
             server = await websockets.serve(self.handler, "127.0.0.1", self.port, max_size=2 ** 22)
             print(f"eyeos: listening on 127.0.0.1:{self.port}", file=sys.stderr, flush=True)
-            tasks.append(self.stream_frames())
+            tasks.append(self.stream_openness())
         running = [asyncio.create_task(t) for t in tasks]
         await self.done
         self.stop.set()

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import time
 
 from eyeos.agent import Agent
 from eyeos.db import DB
@@ -170,3 +171,26 @@ def test_agent_waits_for_sign_in_but_not_for_an_unknown_check(tmp_path, monkeypa
     assert not agent.available() and "unknown" not in out
     asyncio.run(says({"ok": True, "detail": "Signed in"}))
     assert agent.available()
+
+
+def test_without_a_usable_screen_description_the_agent_gets_the_window_title_and_no_screen_tools(tmp_path):
+    from eyeos.screen_watch import ScreenWatch, plausible
+    app = FakeApp(tmp_path, None)
+    app.screen = ScreenWatch(lambda: app.settings, lambda: True)
+    agent = Agent(app)
+    active = {"name": "Safari", "bundle_id": "com.apple.Safari", "category": "reading", "window_title": "Docs"}
+    assert app.screen.context() is None
+    assert agent._active_app(active, None)["window_title"] == "Docs"
+    assert not {"describe_screen", "summarize_aloud"} & set(agent.offered())
+
+    app.screen.ok = True
+    app.screen.latest = {"ts": time.time(), "activity": "reading API docs in Safari", "situation": "reading"}
+    assert app.screen.context()["activity"] == "reading API docs in Safari"
+    assert "window_title" not in agent._active_app(active, app.screen.context())
+    assert "describe_screen" in agent.offered()
+
+    app.screen.latest["ts"] -= 3600  # stale
+    assert app.screen.context() is None
+    for junk in ({"activity": "a screenshot of a computer", "situation": "idle"}, {"activity": "", "situation": "idle"},
+                 {"activity": "editing code", "situation": None}):
+        assert not plausible(junk)

@@ -1,13 +1,6 @@
 import Charts
 import SwiftUI
 
-private let rightEye = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
-private let leftEye = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]
-private let faceOval = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176,
-                        149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109]
-private let lips = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185]
-private let fingertips = [4, 8, 12, 16, 20]
-
 // MARK: - shared styling
 
 extension View {
@@ -53,51 +46,24 @@ struct LiveView: View {
     @AppStorage("live.range") private var range = "10m"
 
     var body: some View {
-        let camera = store.setting("ui.show_camera_image")
         GeometryReader { geo in
             // Fit everything in the window and let the timeline take the leftover height; scroll only when it's too short.
-            if geo.size.height >= (camera ? 720 : 700) {
-                content(camera: camera, fill: true, height: geo.size.height).frame(height: geo.size.height)
+            if geo.size.height >= 700 {
+                content(fill: true).frame(height: geo.size.height)
             } else {
-                ScrollView { content(camera: camera, fill: false, height: geo.size.height) }
+                ScrollView { content(fill: false) }
             }
         }
     }
 
-    func content(camera: Bool, fill: Bool, height: CGFloat) -> some View {
+    func content(fill: Bool) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            AppBar(title: "Live") { cameraToggle }
-            if camera {
-                HStack(alignment: .top, spacing: 14) {
-                    VStack(spacing: 14) {
-                        CameraView(feed: store.feed).frame(maxHeight: fill ? max(200, height - 440) : 360)
-                        TimelineCard(metric: $metric, range: $range, fill: fill)
-                    }
-                    .frame(maxWidth: .infinity)
-                    VStack(spacing: 10) {
-                        ScoreSummary(ringSize: 64)
-                        TileGrid(columns: 2, selected: $metric)
-                        TodayStrip(columns: 3, compact: true)
-                    }
-                    .frame(width: 400)
-                }
-            } else {
-                HeroCard()
-                TileGrid(columns: 4, selected: $metric)
-                TimelineCard(metric: $metric, range: $range, fill: fill)
-            }
+            AppBar(title: "Live") { EmptyView() }
+            HeroCard()
+            TileGrid(columns: 4, selected: $metric)
+            TimelineCard(metric: $metric, range: $range, fill: fill)
         }
         .padding(20)
-    }
-
-    var cameraToggle: some View {
-        Toggle(isOn: Binding(get: { store.setting("ui.show_camera_image") },
-                             set: { store.set("ui.show_camera_image", $0); if !$0 { store.feed.frame = nil } })) {
-            Label("Camera", systemImage: store.setting("ui.show_camera_image") ? "video.fill" : "video.slash")
-        }
-        .toggleStyle(.button)
-        .controlSize(.large)
-        .help("Show or hide what the camera sees")
     }
 }
 
@@ -649,100 +615,5 @@ struct OpennessChart: View {
         .chartXScale(domain: -60...0)
         .chartYScale(domain: 0...1.2)
         .chartXAxisLabel("seconds ago")
-    }
-}
-
-// MARK: - camera
-
-struct CameraView: View {
-    @EnvironmentObject var store: Store
-    @ObservedObject var feed: LiveFeed
-
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            ZStack {
-                Color(white: 0.06)
-                if let img = feed.frame {
-                    Image(nsImage: img).resizable()
-                }
-                Canvas { ctx, size in draw(ctx, size) }
-            }
-            .scaleEffect(x: -1, y: 1)  // mirrored for display only; all math is unmirrored (SPEC §3)
-            .clipped()
-
-            HStack(spacing: 6) {
-                if store.metrics.bool("rubbing") { Pill(text: "Eye rub", icon: "hand.raised.fill", color: .pink) }
-                if store.metrics.bool("squinting") { Pill(text: "Squinting", icon: "sun.max.fill", color: .orange) }
-            }
-            .padding(10)
-        }
-        // the container takes the camera's own aspect so the image and the normalized landmarks line up
-        .aspectRatio((store.status.num("frame_w") ?? 16) / (store.status.num("frame_h") ?? 9), contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.08)))
-    }
-
-    func draw(_ ctx: GraphicsContext, _ size: CGSize) {
-        guard let lm = feed.landmarks else { return }
-        func pt(_ p: [Double]) -> CGPoint { CGPoint(x: p[0] * size.width, y: p[1] * size.height) }
-        if let face = lm["face"] as? [[Double]], face.count >= 478 {
-            for (i, p) in face.enumerated() where i % 3 == 0 {
-                ctx.fill(Path(ellipseIn: CGRect(origin: pt(p), size: .init(width: 1.5, height: 1.5))), with: .color(.white.opacity(0.35)))
-            }
-            func contour(_ idx: [Int], _ color: Color, width: CGFloat = 1) {
-                var path = Path()
-                path.addLines(idx.map { pt(face[$0]) })
-                path.closeSubpath()
-                ctx.stroke(path, with: .color(color), lineWidth: width)
-            }
-            let o = lm.num("o") ?? 1
-            let eyeColor = Color(hue: 0.33 * min(1, max(0, (o - 0.2) / 0.7)), saturation: 0.9, brightness: 0.95)
-            contour(faceOval, .white.opacity(0.25))
-            contour(lips, .white.opacity(0.3))
-            contour(rightEye, eyeColor, width: 2)
-            contour(leftEye, eyeColor, width: 2)
-            if let iris = lm["iris"] as? J {
-                for (k, eye) in [("r", rightEye), ("l", leftEye)] {
-                    guard let v = iris[k] as? [Double], v.count == 3 else { continue }
-                    let c = CGPoint(x: v[0] * size.width, y: v[1] * size.height), r = v[2] * size.width
-                    ctx.stroke(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)), with: .color(.cyan), lineWidth: 1.5)
-                    // gaze vector: iris offset from the eye's center, exaggerated
-                    let ec = eye.map { pt(face[$0]) }.reduce(CGPoint.zero) { CGPoint(x: $0.x + $1.x / 16, y: $0.y + $1.y / 16) }
-                    var p = Path()
-                    p.move(to: c)
-                    p.addLine(to: CGPoint(x: c.x + (c.x - ec.x) * 6, y: c.y + (c.y - ec.y) * 6))
-                    ctx.stroke(p, with: .color(.cyan.opacity(0.8)), lineWidth: 1.5)
-                }
-            }
-            // head-pose gizmo at the nose tip
-            let n = pt(face[1]), m = store.metrics
-            let yaw = (m.num("yaw_deg") ?? 0) * .pi / 180, pitch = (m.num("pitch_deg") ?? 0) * .pi / 180, roll = (m.num("roll_deg") ?? 0) * .pi / 180
-            let L = size.width * 0.07
-            for (dx, dy, c) in [(cos(roll), sin(roll), Color.red), (-sin(roll), cos(roll), Color.green), (-sin(yaw), -sin(pitch), Color.blue)] {
-                var p = Path()
-                p.move(to: n)
-                p.addLine(to: CGPoint(x: n.x + dx * L, y: n.y + dy * L))
-                ctx.stroke(p, with: .color(c), lineWidth: 2)
-            }
-        }
-        // shoulders + neck from MediaPipe Pose: green when upright, orange when posture has drifted
-        if let pose = lm["pose"] as? [[Double]], pose.count >= 13, pose[11].count >= 4, min(pose[11][3], pose[12][3]) > 0.6 {
-            let off = !store.metrics.arr0("posture_issues").isEmpty
-            let color: Color = off ? .orange : .green
-            let l = pt(pose[11]), r = pt(pose[12]), nose = pt(pose[0])
-            let mid = CGPoint(x: (l.x + r.x) / 2, y: (l.y + r.y) / 2)
-            var p = Path()
-            p.move(to: l); p.addLine(to: r)
-            p.move(to: mid); p.addLine(to: nose)
-            ctx.stroke(p, with: .color(color.opacity(0.85)), style: StrokeStyle(lineWidth: 3, lineCap: .round))
-            for c in [l, r] { ctx.fill(Path(ellipseIn: CGRect(x: c.x - 5, y: c.y - 5, width: 10, height: 10)), with: .color(color)) }
-        }
-        for hand in (lm["hands"] as? [[[Double]]]) ?? [] {
-            for i in fingertips where i < hand.count {
-                let c = pt(hand[i])
-                ctx.fill(Path(ellipseIn: CGRect(x: c.x - 4, y: c.y - 4, width: 8, height: 8)),
-                         with: .color(store.metrics.bool("rubbing") ? .red : .yellow))
-            }
-        }
     }
 }

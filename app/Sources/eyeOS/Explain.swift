@@ -162,12 +162,14 @@ enum Explain {
 
     static let posture = Explainer(
         title: "Posture",
-        meaning: "How your sitting posture has drifted since the start of this session, from your shoulders (MediaPipe Pose) and head. Slumping, raised shoulders or leaning in usually creep in as you get tired.",
+        meaning: "How your sitting posture has drifted since the start of this session, from your shoulders, ears and head (MediaPipe Pose, including its 3-D estimate). Slumping, a forward head, rounded shoulders or leaning in usually creep in as you get tired.",
         math: """
         reference = the first 3 min of the session (calibration until then)
         now = median over the last 30 s
-        neck = nose height above shoulders ÷ shoulder width
+        neck = ear height above shoulders ÷ shoulder width (nose if the ears are hidden)
         slumping: neck < 85 % of reference (head sinks)
+        head forward: ears ≥ 10° further in front of the shoulders (3-D)
+        shoulders rounded: shoulder width in 3-D < 90 % of reference
         shoulders raised: same, with the shoulders lifted
         shoulders uneven: shoulder line tilts ≥ 6°
         leaning sideways: head ≥ 15 % of shoulder width off-center
