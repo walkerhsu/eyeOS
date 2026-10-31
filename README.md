@@ -1,16 +1,32 @@
-# eyeOS
+<div align="center">
 
-![eyeOS: an AI eye-habit coach in your Mac's menu bar](docs/images/hero.png)
+# eyeOS
 
 **An AI eye-habit coach in your Mac's menu bar that fixes the habits straining your eyes without breaking your focus.**
 
-Computer vision syndrome, or digital eye strain, is the dry, tired, blurry-eyed feeling after hours at a screen. The advice is always the same: blink more, sit back, take breaks. That advice rarely survives a deadline, and 20-20-20 timers get dismissed the moment work gets real.
+ 🐻 Built in **Cal Hacks 13.0 • ⏱️ 36 hours**
+
+[Inspiration](#inspiration) · [What it does](#what-it-does) · [Architecture](#architecture) · [Built with...](#built-with)
+
+[Install](#install) ([download](https://github.com/walkerhsu/eyeOS/releases/latest)) · [Build from source](#build-from-source) · [Spec](SPEC.md)
+
+**Unique Features:**
+[Zen mode](#zen-mode) · [Blink blur](#blink-blur) · [Eye gym](#eye-gym) · [Habit coach](#habit-coach) · [Voice Agent](#voice-cartesia) · [Demo media](#demo-video-and-devpost-media)
+
+[![eyeOS: an AI eye-habit coach in your Mac's menu bar](docs/images/hero.png)](https://youtu.be/V5lTXN15UJ8)
+
+
+</div>
+
+### DEMO: https://youtu.be/V5lTXN15UJ8
+### Devpost: https://devpost.com/software/eyeos-dzuijy
+
+## Context
+Computer vision syndrome, or digital eye strain, is the dry, tired, irritating feeling after hours at a screen. The advice is always the same: blink more, sit back, take breaks. That advice rarely survives a deadline, and 20-20-20 timers get dismissed the moment work gets real.
 
 eyeOS is for people on screens not by choice, but because their work demands it: students pulling all-nighters, engineers, IT, accountants, and anyone at a desk all day. It follows three design principles: **unobtrusive**, **adaptive**, and **transparent**.
 
 The name is literal. An OS schedules work and manages resources. eyeOS schedules rest, and manages brightness, dark mode, and contrast.
-
-**Contents:** [What it does](#what-it-does) · [Architecture](#architecture) · [Built with](#built-with) · [Install](#install) ([download](https://github.com/walkerhsu/eyeOS/releases/latest)) · [Build from source](#build-from-source) · [Testing setup](#testing-setup) · [Zen mode](#zen-mode) · [Blink blur](#blink-blur) · [Eye gym](#eye-gym) · [Habit coach](#habit-coach) · [Voice](#voice-cartesia) · [Demo media](#demo-video-and-devpost-media) · [Spec](SPEC.md)
 
 ## What it does
 
@@ -100,7 +116,7 @@ conductor's text goes along only while it is recent and actually describes the s
 window's title instead (when Automation is allowed) and no screen field or screen tools at all. If you approve the calendar tool, it also sees the titles of your next few events. Voice uses macOS `say`
 unless you add a Cartesia key.
 
-## Built with
+## Built with:
 
 | Layer | Tools |
 |---|---|
@@ -204,6 +220,8 @@ sleep 300 | uv run python -m eyeos --port 8799 --token t --db /tmp/eyeos-test.db
 uv run python scripts/check_setup.py 8799 t   # prints done/failed + the calibration result per step
 pkill -f "eyeos --port 8799"
 ```
+
+# Unique Features
 
 ## Zen mode
 
@@ -327,26 +345,10 @@ uv run pytest
 
 Running from a terminal makes macOS attribute the camera to the terminal app.
 
-## Demo video and Devpost media
-
-`video/` is a [Remotion](https://www.remotion.dev) project that renders the animated parts of the demo video and the Devpost gallery images. The numbers in them are illustrative, not real data. The images in `docs/images/` are copies of the gallery renders.
-
-```sh
-cd video && npm install
-npm run studio                 # preview
-npm run render                 # memory + daily report segment, timed to public/voiceover.m4a
-npm run render:onboarding      # silent onboarding montage
-npm run render:agent           # Agent tab, timed to public/agent-tab.m4a
-npm run render:log             # Log tab, timed to public/log-tab.m4a
-npm run render:gallery         # 3:2 gallery images → out/gallery/
-```
-
-Scene timings live in `video/src/timing.ts`.
-
-## Deviations from the spec
+<!-- ## Deviations from the spec
 
 - Agent: Claude Agent SDK (`claude-agent-sdk`) with in-process MCP tools instead of the raw Messages API; the §9.2 gate runs inside each tool handler.
 - Camera: always the Mac's built-in camera (never a Continuity Camera iPhone).
 - Contrast / transparency / motion / cursor toggles go through user-created Shortcuts (`eyeOS Contrast On`, …): `defaults write com.apple.universalaccess` is refused on this macOS (R2).
 - MediaPipe runs in VIDEO mode on a dedicated thread instead of LIVE_STREAM.
-- `tests/fixtures/session_a.jsonl.gz` is not recorded yet; the fixture test is skipped until it exists (record it with `--record`, following §13, and write `session_a.truth.json`).
+- `tests/fixtures/session_a.jsonl.gz` is not recorded yet; the fixture test is skipped until it exists (record it with `--record`, following §13, and write `session_a.truth.json`). -->
