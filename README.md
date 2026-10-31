@@ -22,15 +22,17 @@
 ### Devpost: https://devpost.com/software/eyeos-dzuijy
 
 ## Context
-Computer vision syndrome, or digital eye strain, is the dry, tired, irritating feeling after hours at a screen. The advice is always the same: blink more, sit back, take breaks. That advice rarely survives a deadline, and 20-20-20 timers get dismissed the moment work gets real.
+Computer vision syndrome, or digital eye strain, is the dry, tired, irritating feeling after hours at a screen. The advice is always the same: blink more, sit back, take more breaks. But when you're even remotely focused, you rarely pay attention to such small habits, and when your job, occupation, and/or passion literally requires you to be in front of a screen all the time, taking 20-minute breaks isn't practical at all.
 
-eyeOS is for people on screens not by choice, but because their work demands it: students pulling all-nighters, engineers, IT, accountants, and anyone at a desk all day. It follows three design principles: **unobtrusive**, **adaptive**, and **transparent**.
+eyeOS is for people consistently on screens for unhealthy hours daily not by choice, but because their work demands it: students pulling all-nighters, engineers, IT, accountants, and anyone at a desk all day. 
 
-The name is literal. An OS schedules work and manages resources. eyeOS schedules rest, and manages brightness, dark mode, and contrast.
+eyeOS follows three core design principles: **unobtrusive**, **adaptive**, and **transparent**.
+
+The name is literal. By definition, an operating system (OS) schedules work and manages resources. eyeOS schedules rest, and manages brightness, dark mode, and contrast.
 
 ## What it does
 
-The camera and MediaPipe turn each frame into blinks, half blinks, stares, distance, posture, rubs, yawns, and a dark room against a bright display, rolled into a live 0–100 eye score.
+The camera and MediaPipe turn each frame into insights and metrics that later inform agent decisions: blinks, half-blinks, stares, distance from screen, posture, rubs, yawns, and a dark room against a bright display. **All fused into a live 0–100 eye score.**
 
 ### Nudges small enough to work through
 
@@ -40,7 +42,7 @@ Fixes happen in the moment and clear as soon as the habit does: stare and the sc
 
 ### Quiet when you're locked in
 
-A local vision model checks a screenshot about every 30 seconds to work out what you're doing and how interruptible you are. During deep work it turns on **Zen**: measuring continues, nudges wait. When Zen ends, a recap shows what your eyes did while eyeOS stayed silent. See [Zen mode](#zen-mode).
+A local vision model checks a screenshot about every 30 seconds to work out what you're doing and how interruptible you are. During deep work it turns on **Zen**: measuring continues, nudges wait. When Zen ends, a recap shows what your eyes did while eyeOS stayed silent. **See [Zen mode](#zen-mode).**
 
 ### It learns what works for you
 
